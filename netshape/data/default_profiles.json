@@ -1,0 +1,86 @@
+{
+  "offline": {
+    "description": "All proxied traffic is dropped.",
+    "bandwidth_bps": 0,
+    "latency_ms": 0,
+    "loss_pct": 1.0,
+    "jitter_ms": 0
+  },
+  "edge": {
+    "description": "Very slow mobile edge connection.",
+    "bandwidth_bps": 240000,
+    "latency_ms": 400,
+    "loss_pct": 0.03,
+    "jitter_ms": 120
+  },
+  "2g": {
+    "description": "Typical 2G mobile connection.",
+    "bandwidth_bps": 50000,
+    "latency_ms": 500,
+    "loss_pct": 0.02,
+    "jitter_ms": 150
+  },
+  "3g": {
+    "description": "Typical 3G mobile connection.",
+    "bandwidth_bps": 780000,
+    "latency_ms": 200,
+    "loss_pct": 0.01,
+    "jitter_ms": 60
+  },
+  "4g": {
+    "description": "Typical 4G mobile connection.",
+    "bandwidth_bps": 4000000,
+    "latency_ms": 80,
+    "loss_pct": 0.003,
+    "jitter_ms": 25
+  },
+  "5g": {
+    "description": "Fast mobile connection.",
+    "bandwidth_bps": 50000000,
+    "latency_ms": 30,
+    "loss_pct": 0.001,
+    "jitter_ms": 10
+  },
+  "wifi": {
+    "description": "Common home Wi-Fi.",
+    "bandwidth_bps": 30000000,
+    "latency_ms": 25,
+    "loss_pct": 0.001,
+    "jitter_ms": 8
+  },
+  "cable": {
+    "description": "Residential cable broadband.",
+    "bandwidth_bps": 100000000,
+    "latency_ms": 20,
+    "loss_pct": 0.0005,
+    "jitter_ms": 5
+  },
+  "dsl": {
+    "description": "Older DSL broadband.",
+    "bandwidth_bps": 6000000,
+    "latency_ms": 60,
+    "loss_pct": 0.002,
+    "jitter_ms": 20
+  },
+  "satellite": {
+    "description": "High-latency satellite internet.",
+    "bandwidth_bps": 12000000,
+    "latency_ms": 650,
+    "loss_pct": 0.005,
+    "jitter_ms": 80
+  },
+  "congested": {
+    "description": "Busy shared network with jitter and loss.",
+    "bandwidth_bps": 1500000,
+    "latency_ms": 180,
+    "loss_pct": 0.025,
+    "jitter_ms": 140
+  },
+  "fiber": {
+    "description": "Fast wired fiber connection.",
+    "bandwidth_bps": 1000000000,
+    "latency_ms": 5,
+    "loss_pct": 0.0,
+    "jitter_ms": 2
+  }
+}

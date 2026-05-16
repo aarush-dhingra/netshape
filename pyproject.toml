@@ -38,6 +38,9 @@ netshape = "netshape.__main__:main"
 [tool.setuptools.packages.find]
 include = ["netshape*"]
 
+[tool.setuptools.package-data]
+netshape = ["data/*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
