@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import ipaddress
+import struct
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -113,7 +115,12 @@ class ThrottledProxy:
     ) -> None:
         self._active_writers.add(writer)
         try:
-            header_bytes, _ = await self._read_headers(reader)
+            first_byte = await reader.readexactly(1)
+            if first_byte == b"\x05":
+                await self._handle_socks5(reader, writer)
+                return
+
+            header_bytes, _ = await self._read_headers(reader, prefix=first_byte)
             request_line, headers = self._parse_request(header_bytes)
             method, target, version = self._split_request_line(request_line)
             self.config.requests_handled += 1
@@ -140,7 +147,51 @@ class ThrottledProxy:
         self._active_writers.add(upstream_writer)
         client_writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         await client_writer.drain()
+        await self._tunnel_streams(client_reader, upstream_reader, client_writer, upstream_writer)
 
+    async def _handle_socks5(
+        self,
+        client_reader: asyncio.StreamReader,
+        client_writer: asyncio.StreamWriter,
+    ) -> None:
+        methods_count = (await client_reader.readexactly(1))[0]
+        methods = await client_reader.readexactly(methods_count)
+        if 0x00 not in methods:
+            client_writer.write(b"\x05\xff")
+            await client_writer.drain()
+            return
+        client_writer.write(b"\x05\x00")
+        await client_writer.drain()
+
+        version, command, reserved, address_type = await client_reader.readexactly(4)
+        if version != 0x05 or reserved != 0x00:
+            await self._send_socks5_reply(client_writer, 0x01)
+            return
+        if command != 0x01:
+            await self._send_socks5_reply(client_writer, 0x07)
+            return
+
+        host = await self._read_socks5_host(client_reader, address_type)
+        port = struct.unpack(">H", await client_reader.readexactly(2))[0]
+        self.config.requests_handled += 1
+
+        try:
+            upstream_reader, upstream_writer = await asyncio.open_connection(host, port)
+        except OSError:
+            await self._send_socks5_reply(client_writer, 0x04)
+            return
+
+        self._active_writers.add(upstream_writer)
+        await self._send_socks5_reply(client_writer, 0x00)
+        await self._tunnel_streams(client_reader, upstream_reader, client_writer, upstream_writer)
+
+    async def _tunnel_streams(
+        self,
+        client_reader: asyncio.StreamReader,
+        upstream_reader: asyncio.StreamReader,
+        client_writer: asyncio.StreamWriter,
+        upstream_writer: asyncio.StreamWriter,
+    ) -> None:
         client_to_upstream = asyncio.create_task(
             self._pipe(client_reader, upstream_writer, direction="sent")
         )
@@ -283,12 +334,18 @@ class ThrottledProxy:
                 "control_port": self.control_port,
                 "running_for_seconds": max(0.0, time.time() - self.config.started_at),
                 "bandwidth_model": "shared_bidirectional",
+                "protocols": ["http", "https-connect", "socks5-connect"],
             }
         )
         return payload
 
-    async def _read_headers(self, reader: asyncio.StreamReader) -> tuple[bytes, bytes]:
-        data = await reader.readuntil(b"\r\n\r\n")
+    async def _read_headers(
+        self,
+        reader: asyncio.StreamReader,
+        *,
+        prefix: bytes = b"",
+    ) -> tuple[bytes, bytes]:
+        data = prefix + await reader.readuntil(b"\r\n\r\n")
         if len(data) > HEADER_LIMIT:
             raise ValueError("HTTP headers too large")
         return data[:-4], b""
@@ -312,6 +369,20 @@ class ThrottledProxy:
         if not version.startswith("HTTP/"):
             raise ValueError("malformed HTTP version")
         return method, target, version
+
+    async def _read_socks5_host(self, reader: asyncio.StreamReader, address_type: int) -> str:
+        if address_type == 0x01:
+            return ".".join(str(part) for part in await reader.readexactly(4))
+        if address_type == 0x03:
+            length = (await reader.readexactly(1))[0]
+            return (await reader.readexactly(length)).decode("idna")
+        if address_type == 0x04:
+            return str(ipaddress.ip_address(await reader.readexactly(16)))
+        raise ValueError("unsupported SOCKS5 address type")
+
+    async def _send_socks5_reply(self, writer: asyncio.StreamWriter, code: int) -> None:
+        writer.write(b"\x05" + bytes([code]) + b"\x00\x01\x00\x00\x00\x00\x00\x00")
+        await writer.drain()
 
     def _build_request(
         self,

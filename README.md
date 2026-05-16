@@ -1,6 +1,6 @@
 # NetShape
 
-NetShape runs desktop apps through a local throttling proxy so developers can test degraded network conditions without OS-level network rules or administrator privileges.
+NetShape runs desktop apps through a local SOCKS5-capable throttling proxy so developers can test degraded network conditions without OS-level network rules or administrator privileges.
 
 This repository is being rebuilt incrementally from the proxy-based architecture plan.
 
@@ -45,7 +45,9 @@ Verify that the proxy can handle traffic:
 netshape test --profile 3g
 ```
 
-NetShape uses one shared bidirectional bandwidth bucket for each proxy session, so upload and download traffic compete for the configured capacity like a constrained network link.
+NetShape sets `ALL_PROXY=socks5://127.0.0.1:<port>` for launched apps so SOCKS-aware runtimes such as Electron/Chromium can route raw TCP through the proxy. The same traffic port also still accepts HTTP proxy requests and HTTPS `CONNECT` tunnels for compatibility.
+
+NetShape uses one shared bidirectional bandwidth bucket for each proxy session, so upload and download traffic compete for the configured capacity like a constrained network link. SOCKS5 UDP ASSOCIATE is not implemented yet.
 
 ## Testing
 
@@ -70,4 +72,4 @@ Manual proxy smoke test with real HTTP traffic:
 netshape run --profile 3g -- curl http://example.com
 ```
 
-For desktop apps, launch the app command after `--`; Electron and most CLI tools inherit `HTTP_PROXY` and `HTTPS_PROXY` from the NetShape session.
+For desktop apps, launch the app command after `--`; Electron and most CLI tools inherit `ALL_PROXY`, `HTTP_PROXY`, and `HTTPS_PROXY` from the NetShape session.

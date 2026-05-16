@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import http.server
+import socket
+import struct
 import threading
 import time
 import urllib.request
 from dataclasses import dataclass
-from http.client import HTTPConnection
 from socketserver import ThreadingTCPServer
 from urllib.parse import urlsplit
 
@@ -67,7 +68,7 @@ def run_speed_test(
         direct_seconds = _timed_download(url)
         proxied_seconds = _timed_download(
             url,
-            proxy_url=f"http://127.0.0.1:{proxy.traffic_port}",
+            socks5_proxy=("127.0.0.1", proxy.traffic_port),
         )
         return SpeedTestResult(
             bytes_downloaded=byte_count,
@@ -80,21 +81,80 @@ def run_speed_test(
         server.stop()
 
 
-def _timed_download(url: str, *, proxy_url: str | None = None) -> float:
+def _timed_download(url: str, *, socks5_proxy: tuple[str, int] | None = None) -> float:
     started = time.perf_counter()
-    if proxy_url is None:
+    if socks5_proxy is None:
         with urllib.request.urlopen(url, timeout=10) as response:
             response.read()
     else:
-        parsed_proxy = urlsplit(proxy_url)
-        conn = HTTPConnection(parsed_proxy.hostname or "127.0.0.1", parsed_proxy.port or 80, timeout=10)
-        try:
-            conn.request("GET", url)
-            response = conn.getresponse()
-            response.read()
-        finally:
-            conn.close()
+        _download_via_socks5(url, socks5_proxy)
     return time.perf_counter() - started
+
+
+def _download_via_socks5(url: str, proxy: tuple[str, int]) -> bytes:
+    parsed = urlsplit(url)
+    host = parsed.hostname or ""
+    port = parsed.port or 80
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+
+    with socket.create_connection(proxy, timeout=10) as sock:
+        sock.settimeout(10)
+        sock.sendall(b"\x05\x01\x00")
+        if sock.recv(2) != b"\x05\x00":
+            raise OSError("SOCKS5 proxy did not accept no-auth method")
+
+        encoded_host = host.encode("idna")
+        request = (
+            b"\x05\x01\x00\x03"
+            + bytes([len(encoded_host)])
+            + encoded_host
+            + struct.pack(">H", port)
+        )
+        sock.sendall(request)
+        reply = _recv_exact(sock, 4)
+        if reply[1] != 0x00:
+            raise OSError(f"SOCKS5 connect failed with code {reply[1]}")
+        _discard_socks5_bind_address(sock, reply[3])
+
+        http_request = (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {host}:{port}\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+        ).encode("ascii")
+        sock.sendall(http_request)
+
+        chunks: list[bytes] = []
+        while chunk := sock.recv(8192):
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+
+def _discard_socks5_bind_address(sock: socket.socket, address_type: int) -> None:
+    if address_type == 0x01:
+        _recv_exact(sock, 4)
+    elif address_type == 0x03:
+        length = _recv_exact(sock, 1)[0]
+        _recv_exact(sock, length)
+    elif address_type == 0x04:
+        _recv_exact(sock, 16)
+    else:
+        raise OSError("SOCKS5 proxy returned unsupported address type")
+    _recv_exact(sock, 2)
+
+
+def _recv_exact(sock: socket.socket, byte_count: int) -> bytes:
+    chunks: list[bytes] = []
+    remaining = byte_count
+    while remaining:
+        chunk = sock.recv(remaining)
+        if not chunk:
+            raise OSError("connection closed before expected bytes arrived")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
 
 
 class _PayloadServer:

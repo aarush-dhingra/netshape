@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import struct
 
 from netshape.proxy_server import ThrottleConfig, ThrottledProxy
 
@@ -129,6 +130,119 @@ async def _test_connect_proxy_tunnels_bytes() -> None:
     finally:
         upstream.close()
         await upstream.wait_closed()
+        await proxy.close()
+
+
+def test_socks5_connect_tunnels_ipv4_bytes() -> None:
+    asyncio.run(_test_socks5_connect_tunnels_ipv4_bytes())
+
+
+async def _test_socks5_connect_tunnels_ipv4_bytes() -> None:
+    async def handle_echo(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        data = await reader.read(1024)
+        writer.write(b"socks:" + data)
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    upstream = await asyncio.start_server(handle_echo, "127.0.0.1", 0)
+    upstream_port = _server_port(upstream)
+    proxy = ThrottledProxy(traffic_port=0, control_port=0, config=ThrottleConfig())
+    await proxy.start()
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", proxy.traffic_port)
+        writer.write(b"\x05\x01\x00")
+        await writer.drain()
+        assert await reader.readexactly(2) == b"\x05\x00"
+
+        writer.write(
+            b"\x05\x01\x00\x01"
+            + bytes([127, 0, 0, 1])
+            + struct.pack(">H", upstream_port)
+        )
+        await writer.drain()
+        assert await reader.readexactly(10) == b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00"
+
+        writer.write(b"hello")
+        await writer.drain()
+        assert await reader.read(11) == b"socks:hello"
+        writer.close()
+        await writer.wait_closed()
+        assert proxy.config.requests_handled == 1
+    finally:
+        upstream.close()
+        await upstream.wait_closed()
+        await proxy.close()
+
+
+def test_socks5_connect_tunnels_domain_bytes() -> None:
+    asyncio.run(_test_socks5_connect_tunnels_domain_bytes())
+
+
+async def _test_socks5_connect_tunnels_domain_bytes() -> None:
+    async def handle_echo(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        data = await reader.read(1024)
+        writer.write(b"domain:" + data)
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    upstream = await asyncio.start_server(handle_echo, "127.0.0.1", 0)
+    upstream_port = _server_port(upstream)
+    proxy = ThrottledProxy(traffic_port=0, control_port=0, config=ThrottleConfig())
+    await proxy.start()
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", proxy.traffic_port)
+        writer.write(b"\x05\x01\x00")
+        await writer.drain()
+        assert await reader.readexactly(2) == b"\x05\x00"
+
+        host = b"localhost"
+        writer.write(
+            b"\x05\x01\x00\x03"
+            + bytes([len(host)])
+            + host
+            + struct.pack(">H", upstream_port)
+        )
+        await writer.drain()
+        assert await reader.readexactly(10) == b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00"
+
+        writer.write(b"hello")
+        await writer.drain()
+        assert await reader.read(12) == b"domain:hello"
+        writer.close()
+        await writer.wait_closed()
+    finally:
+        upstream.close()
+        await upstream.wait_closed()
+        await proxy.close()
+
+
+def test_socks5_rejects_udp_associate_for_now() -> None:
+    asyncio.run(_test_socks5_rejects_udp_associate_for_now())
+
+
+async def _test_socks5_rejects_udp_associate_for_now() -> None:
+    proxy = ThrottledProxy(traffic_port=0, control_port=0, config=ThrottleConfig())
+    await proxy.start()
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", proxy.traffic_port)
+        writer.write(b"\x05\x01\x00")
+        await writer.drain()
+        assert await reader.readexactly(2) == b"\x05\x00"
+
+        writer.write(b"\x05\x03\x00\x01\x7f\x00\x00\x01\x00\x35")
+        await writer.drain()
+        assert await reader.readexactly(10) == b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00"
+        writer.close()
+        await writer.wait_closed()
+    finally:
         await proxy.close()
 
 

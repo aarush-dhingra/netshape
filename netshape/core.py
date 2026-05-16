@@ -238,13 +238,16 @@ def clear_state(path: Path = DEFAULT_STATE_PATH) -> None:
 
 
 def _proxy_env(env: dict[str, str], traffic_port: int) -> dict[str, str]:
-    proxy_url = f"http://127.0.0.1:{traffic_port}"
+    http_proxy_url = f"http://127.0.0.1:{traffic_port}"
+    socks_proxy_url = f"socks5://127.0.0.1:{traffic_port}"
     env.update(
         {
-            "HTTP_PROXY": proxy_url,
-            "HTTPS_PROXY": proxy_url,
-            "http_proxy": proxy_url,
-            "https_proxy": proxy_url,
+            "ALL_PROXY": socks_proxy_url,
+            "all_proxy": socks_proxy_url,
+            "HTTP_PROXY": http_proxy_url,
+            "HTTPS_PROXY": http_proxy_url,
+            "http_proxy": http_proxy_url,
+            "https_proxy": http_proxy_url,
             "NO_PROXY": "localhost,127.0.0.1",
             "no_proxy": "localhost,127.0.0.1",
         }

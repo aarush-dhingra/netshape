@@ -53,6 +53,7 @@ def test_run_session_sets_proxy_environment_and_cleans_state(tmp_path: Path) -> 
         "import json, os, pathlib; "
         f"pathlib.Path({str(output_path)!r}).write_text("
         "json.dumps({"
+        "'ALL_PROXY': os.environ.get('ALL_PROXY'), "
         "'HTTP_PROXY': os.environ.get('HTTP_PROXY'), "
         "'HTTPS_PROXY': os.environ.get('HTTPS_PROXY'), "
         "'NO_PROXY': os.environ.get('NO_PROXY')"
@@ -68,6 +69,7 @@ def test_run_session_sets_proxy_environment_and_cleans_state(tmp_path: Path) -> 
 
     env = json.loads(output_path.read_text(encoding="utf-8"))
     assert exit_code == 0
+    assert env["ALL_PROXY"].startswith("socks5://127.0.0.1:")
     assert env["HTTP_PROXY"].startswith("http://127.0.0.1:")
     assert env["HTTPS_PROXY"] == env["HTTP_PROXY"]
     assert env["NO_PROXY"] == "localhost,127.0.0.1"
