@@ -3,7 +3,6 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
-*.egg
 *.egg-info/
 dist/
 build/
@@ -13,6 +12,11 @@ build/
 .venv/
 venv/
 env/
+
+# Test and tooling caches
+.pytest_cache/
+.coverage
+htmlcov/
 
 # IDE
 .vscode/
@@ -27,10 +31,11 @@ Thumbs.db
 # NetShape runtime
 .netshape/
 
-# Project docs (keep out of package)
+# Project docs and local plans
 /PLAN.md
 /netshape-product-spec.md
 /netshape-implementation-plan.md
+/proxy-approach-plan.md
 
 # Cursor / tooling
 .commandcode/
