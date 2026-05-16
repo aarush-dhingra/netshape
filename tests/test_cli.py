@@ -31,7 +31,23 @@ def test_run_command_delegates_to_core(monkeypatch) -> None:
     assert result.exit_code == 7
     assert captured["profile"] == "3g"
     assert captured["latency"] == "100ms"
+    assert captured["timeout"] is None
     assert captured["command"] == ["python", "app.py"]
+
+
+def test_run_command_accepts_timeout(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_session(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli, "run_session", fake_run_session)
+
+    result = runner.invoke(cli.app, ["run", "--timeout", "30m", "--", "python", "app.py"])
+
+    assert result.exit_code == 0
+    assert captured["timeout"] == "30m"
 
 
 def test_run_command_requires_command() -> None:
@@ -81,6 +97,29 @@ def test_status_command_prints_json(monkeypatch) -> None:
     assert '"active": false' in result.output
 
 
+def test_status_command_prints_no_traffic_warning(monkeypatch) -> None:
+    monkeypatch.setattr(
+        cli,
+        "get_status",
+        lambda: {
+            "active": True,
+            "profile": "3g",
+            "bandwidth_bps": 1,
+            "latency_ms": 2,
+            "loss_pct": 0.0,
+            "jitter_ms": 3,
+            "traffic_port": 8090,
+            "pid": 123,
+            "warning": "No traffic detected. The app may not be using the proxy.",
+        },
+    )
+
+    result = runner.invoke(cli.app, ["status"])
+
+    assert result.exit_code == 0
+    assert "Warning: No traffic detected" in result.output
+
+
 def test_stop_command_delegates_to_core(monkeypatch) -> None:
     called = False
 
@@ -103,3 +142,19 @@ def test_profiles_command_lists_builtins() -> None:
     assert result.exit_code == 0
     assert "3g:" in result.output
     assert "fiber:" in result.output
+
+
+def test_test_command_reports_proxy_detection(monkeypatch) -> None:
+    class Result:
+        bytes_downloaded = 1024
+        direct_seconds = 0.01
+        proxied_seconds = 0.5
+        requests_handled = 1
+        proxy_detected = True
+
+    monkeypatch.setattr(cli, "run_speed_test", lambda **kwargs: Result())
+
+    result = runner.invoke(cli.app, ["test", "--profile", "3g", "--bytes", "1024"])
+
+    assert result.exit_code == 0
+    assert "Result: proxy is handling traffic" in result.output

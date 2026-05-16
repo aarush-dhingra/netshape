@@ -33,6 +33,20 @@ netshape adjust --latency 500ms
 netshape stop
 ```
 
+Automatically stop a long-running session:
+
+```bash
+netshape run --profile 3g --timeout 30m -- your-app-command
+```
+
+Verify that the proxy can handle traffic:
+
+```bash
+netshape test --profile 3g
+```
+
+NetShape uses one shared bidirectional bandwidth bucket for each proxy session, so upload and download traffic compete for the configured capacity like a constrained network link.
+
 ## Testing
 
 Run the automated suite:
@@ -47,6 +61,7 @@ Quick CLI smoke checks:
 python -m netshape --version
 python -m netshape status --json
 python -m netshape run --port 0 --profile 3g -- python -c "print('ok')"
+python -m netshape test --profile 3g --bytes 1024
 ```
 
 Manual proxy smoke test with real HTTP traffic:

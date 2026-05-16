@@ -132,16 +132,54 @@ async def _test_connect_proxy_tunnels_bytes() -> None:
         await proxy.close()
 
 
+def test_proxy_returns_502_for_unreachable_upstream() -> None:
+    asyncio.run(_test_proxy_returns_502_for_unreachable_upstream())
+
+
+async def _test_proxy_returns_502_for_unreachable_upstream() -> None:
+    proxy = ThrottledProxy(traffic_port=0, control_port=0)
+    await proxy.start()
+    try:
+        response = await _request_raw(
+            proxy.traffic_port,
+            b"GET http://127.0.0.1:1/nope HTTP/1.1\r\nHost: 127.0.0.1:1\r\n\r\n",
+        )
+
+        assert response.startswith(b"HTTP/1.1 502 Error")
+    finally:
+        await proxy.close()
+
+
+def test_proxy_returns_502_for_malformed_request_line() -> None:
+    asyncio.run(_test_proxy_returns_502_for_malformed_request_line())
+
+
+async def _test_proxy_returns_502_for_malformed_request_line() -> None:
+    proxy = ThrottledProxy(traffic_port=0, control_port=0)
+    await proxy.start()
+    try:
+        response = await _request_raw(proxy.traffic_port, b"BROKEN\r\nHost: localhost\r\n\r\n")
+
+        assert response.startswith(b"HTTP/1.1 502 Error")
+        assert b"malformed HTTP request line" in response
+    finally:
+        await proxy.close()
+
+
 async def _request_json(port: int, request: str | bytes) -> dict[str, object]:
+    response = await _request_raw(port, request)
+    _, _, body = response.partition(b"\r\n\r\n")
+    return json.loads(body.decode("utf-8"))
+
+
+async def _request_raw(port: int, request: str | bytes) -> bytes:
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     writer.write(request.encode("ascii") if isinstance(request, str) else request)
     await writer.drain()
     response = await reader.read()
     writer.close()
     await writer.wait_closed()
-
-    _, _, body = response.partition(b"\r\n\r\n")
-    return json.loads(body.decode("utf-8"))
+    return response
 
 
 def _server_port(server: asyncio.AbstractServer) -> int:

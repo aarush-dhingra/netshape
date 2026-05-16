@@ -17,6 +17,7 @@ from typing import Any
 
 from .profiles import resolve_settings
 from .proxy_server import ThrottleConfig, ThrottledProxy
+from .units import parse_duration_ms
 
 DEFAULT_TRAFFIC_PORT = 8090
 DEFAULT_STATE_PATH = Path.home() / ".netshape" / "state.json"
@@ -87,6 +88,7 @@ def run_session(
     latency: str | int | float | None = None,
     loss: str | int | float | None = None,
     jitter: str | int | float | None = None,
+    timeout: str | int | float | None = None,
     traffic_port: int = DEFAULT_TRAFFIC_PORT,
     control_port: int | None = None,
     state_path: Path = DEFAULT_STATE_PATH,
@@ -138,12 +140,20 @@ def run_session(
 
     env = _proxy_env(os.environ.copy(), proxy.traffic_port)
     process = subprocess.Popen(command, env=env)
+    timeout_seconds = None if timeout is None else parse_duration_ms(timeout, kind="timeout") / 1000
+    timeout_timer: threading.Timer | None = None
+    if timeout_seconds is not None and timeout_seconds > 0:
+        timeout_timer = threading.Timer(timeout_seconds, _terminate_process, args=(process,))
+        timeout_timer.daemon = True
+        timeout_timer.start()
     try:
         return process.wait()
     except KeyboardInterrupt:
         process.terminate()
         return process.wait()
     finally:
+        if timeout_timer is not None:
+            timeout_timer.cancel()
         runner.stop()
         clear_state(state_path)
 
@@ -194,6 +204,8 @@ def get_status(*, state_path: Path = DEFAULT_STATE_PATH) -> dict[str, Any]:
     status = _get_json(state.control_port, "/status")
     status["active"] = True
     status["pid"] = state.pid
+    if status.get("running_for_seconds", 0) > 10 and status.get("requests_handled", 0) == 0:
+        status["warning"] = "No traffic detected. The app may not be using the proxy."
     return status
 
 
@@ -240,15 +252,21 @@ def _proxy_env(env: dict[str, str], traffic_port: int) -> dict[str, str]:
     return env
 
 
-def _find_free_port(starting: int) -> int:
-    for port in range(starting, starting + 100):
+def _find_free_port(starting: int, *, attempts: int = 100) -> int:
+    for port in range(starting, starting + attempts):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             try:
                 sock.bind(("127.0.0.1", port))
             except OSError:
                 continue
             return port
-    raise SessionError(f"no free port found starting at {starting}")
+    ending = starting + attempts - 1
+    raise SessionError(f"no free TCP port found on 127.0.0.1 in range {starting}-{ending}")
+
+
+def _terminate_process(process: subprocess.Popen[Any]) -> None:
+    if process.poll() is None:
+        process.terminate()
 
 
 def _post_json(port: int, path: str, payload: dict[str, Any]) -> dict[str, Any]:

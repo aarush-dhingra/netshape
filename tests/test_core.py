@@ -6,9 +6,13 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from netshape.core import (
     ProxyRunner,
     SessionState,
+    SessionError,
+    _find_free_port,
     adjust_session,
     clear_state,
     get_status,
@@ -103,3 +107,61 @@ async def _test_status_adjust_and_stop_session(tmp_path: Path) -> None:
         assert read_state(state_path) is None
     finally:
         runner.stop()
+
+
+def test_status_warns_when_no_traffic_detected(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    proxy = ThrottledProxy(traffic_port=0, control_port=0, config=ThrottleConfig())
+    runner = ProxyRunner(proxy)
+    runner.start()
+    try:
+        proxy.config.started_at = time.time() - 11
+        write_state(
+            SessionState(
+                active=True,
+                traffic_port=proxy.traffic_port,
+                control_port=proxy.control_port,
+                pid=123,
+                started_at=time.time() - 11,
+            ),
+            state_path,
+        )
+
+        status = get_status(state_path=state_path)
+
+        assert "No traffic detected" in status["warning"]
+    finally:
+        runner.stop()
+
+
+def test_run_session_timeout_terminates_child(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    started = time.perf_counter()
+
+    exit_code = run_session(
+        command=[sys.executable, "-c", "import time; time.sleep(30)"],
+        timeout="100ms",
+        traffic_port=0,
+        state_path=state_path,
+    )
+
+    assert exit_code != 0
+    assert time.perf_counter() - started < 10
+    assert read_state(state_path) is None
+
+
+def test_find_free_port_reports_clear_range_when_exhausted(monkeypatch) -> None:
+    class BusySocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def bind(self, address):
+            raise OSError("busy")
+
+    monkeypatch.setattr("socket.socket", lambda *args, **kwargs: BusySocket())
+
+    with pytest.raises(SessionError, match="range 8090-8092"):
+        _find_free_port(8090, attempts=3)

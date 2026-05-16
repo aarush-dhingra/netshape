@@ -42,6 +42,7 @@ def test_parse_bandwidth_rejects_invalid_values(raw: str) -> None:
         ("100ms", 100),
         ("1.5s", 1500),
         ("2 seconds", 2000),
+        ("2m", 120_000),
     ],
 )
 def test_parse_latency(raw: str | int | None, expected: int) -> None:
@@ -54,7 +55,7 @@ def test_parse_jitter_uses_duration_units() -> None:
 
 
 @pytest.mark.parametrize("parser", [parse_latency, parse_jitter])
-@pytest.mark.parametrize("raw", ["", "slow", "10", "2minutes", "-1ms"])
+@pytest.mark.parametrize("raw", ["", "slow", "10", "2hours", "-1ms"])
 def test_duration_parsers_reject_invalid_values(parser, raw: str) -> None:
     with pytest.raises(UnitParseError):
         parser(raw)

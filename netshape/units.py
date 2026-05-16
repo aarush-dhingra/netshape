@@ -46,6 +46,10 @@ _DURATION_UNITS_MS = {
     "sec": 1_000,
     "second": 1_000,
     "seconds": 1_000,
+    "m": 60_000,
+    "min": 60_000,
+    "minute": 60_000,
+    "minutes": 60_000,
 }
 
 

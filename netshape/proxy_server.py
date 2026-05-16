@@ -51,6 +51,7 @@ class ThrottledProxy:
         self._control_server: asyncio.AbstractServer | None = None
         self._shutdown_event = asyncio.Event()
         self._config_lock = asyncio.Lock()
+        self._active_writers: set[asyncio.StreamWriter] = set()
 
     async def start(self) -> None:
         self.config.started_at = time.time()
@@ -82,6 +83,12 @@ class ThrottledProxy:
             if server is not None:
                 server.close()
                 await server.wait_closed()
+        for writer in list(self._active_writers):
+            writer.close()
+        await asyncio.gather(
+            *(writer.wait_closed() for writer in list(self._active_writers)),
+            return_exceptions=True,
+        )
 
     async def configure(self, updates: dict[str, Any]) -> ThrottleConfig:
         async with self._config_lock:
@@ -104,10 +111,11 @@ class ThrottledProxy:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
+        self._active_writers.add(writer)
         try:
             header_bytes, _ = await self._read_headers(reader)
             request_line, headers = self._parse_request(header_bytes)
-            method, target, version = request_line.split(" ", 2)
+            method, target, version = self._split_request_line(request_line)
             self.config.requests_handled += 1
 
             if method.upper() == "CONNECT":
@@ -119,6 +127,7 @@ class ThrottledProxy:
         finally:
             writer.close()
             await writer.wait_closed()
+            self._active_writers.discard(writer)
 
     async def _handle_connect(
         self,
@@ -128,16 +137,28 @@ class ThrottledProxy:
     ) -> None:
         host, port = self._split_host_port(target, default_port=443)
         upstream_reader, upstream_writer = await asyncio.open_connection(host, port)
+        self._active_writers.add(upstream_writer)
         client_writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         await client_writer.drain()
 
-        await asyncio.gather(
-            self._pipe(client_reader, upstream_writer, direction="sent"),
-            self._pipe(upstream_reader, client_writer, direction="received"),
-            return_exceptions=True,
+        client_to_upstream = asyncio.create_task(
+            self._pipe(client_reader, upstream_writer, direction="sent")
         )
-        upstream_writer.close()
-        await upstream_writer.wait_closed()
+        upstream_to_client = asyncio.create_task(
+            self._pipe(upstream_reader, client_writer, direction="received")
+        )
+        try:
+            done, pending = await asyncio.wait(
+                {client_to_upstream, upstream_to_client},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*done, *pending, return_exceptions=True)
+        finally:
+            upstream_writer.close()
+            await upstream_writer.wait_closed()
+            self._active_writers.discard(upstream_writer)
 
     async def _handle_http(
         self,
@@ -163,6 +184,7 @@ class ThrottledProxy:
                 path = f"{path}?{parsed.query}"
 
         upstream_reader, upstream_writer = await asyncio.open_connection(host, port)
+        self._active_writers.add(upstream_writer)
         outbound_headers = {
             key: value
             for key, value in headers.items()
@@ -177,9 +199,12 @@ class ThrottledProxy:
             body = await client_reader.readexactly(content_length)
             await self._write_throttled(upstream_writer, body, direction="sent")
 
-        await self._pipe(upstream_reader, client_writer, direction="received")
-        upstream_writer.close()
-        await upstream_writer.wait_closed()
+        try:
+            await self._pipe(upstream_reader, client_writer, direction="received")
+        finally:
+            upstream_writer.close()
+            await upstream_writer.wait_closed()
+            self._active_writers.discard(upstream_writer)
 
     async def _pipe(
         self,
@@ -257,6 +282,7 @@ class ThrottledProxy:
                 "traffic_port": self.traffic_port,
                 "control_port": self.control_port,
                 "running_for_seconds": max(0.0, time.time() - self.config.started_at),
+                "bandwidth_model": "shared_bidirectional",
             }
         )
         return payload
@@ -277,6 +303,15 @@ class ThrottledProxy:
             key, _, value = line.partition(":")
             headers[key.strip().lower()] = value.strip()
         return request_line, headers
+
+    def _split_request_line(self, request_line: str) -> tuple[str, str, str]:
+        parts = request_line.split()
+        if len(parts) != 3:
+            raise ValueError("malformed HTTP request line")
+        method, target, version = parts
+        if not version.startswith("HTTP/"):
+            raise ValueError("malformed HTTP version")
+        return method, target, version
 
     def _build_request(
         self,

@@ -10,6 +10,7 @@ import typer
 from . import __version__
 from .core import SessionError, adjust_session, get_status, run_session, stop_session
 from .profiles import ProfileError, list_builtin_profiles
+from .speed_test import run_speed_test
 
 app = typer.Typer(
     help="Run apps through a local throttling proxy.",
@@ -44,6 +45,7 @@ def run(
     latency: Optional[str] = typer.Option(None, "--latency", "-l", help="Latency, e.g. 300ms."),
     loss: Optional[str] = typer.Option(None, "--loss", help="Packet loss, e.g. 2%."),
     jitter: Optional[str] = typer.Option(None, "--jitter", "-j", help="Jitter, e.g. 50ms."),
+    timeout: Optional[str] = typer.Option(None, "--timeout", "-t", help="Auto-stop after a duration, e.g. 30m."),
     traffic_port: int = typer.Option(8090, "--port", help="Traffic proxy port."),
 ) -> None:
     """Launch a command with HTTP_PROXY and HTTPS_PROXY pointing at NetShape."""
@@ -62,6 +64,7 @@ def run(
             latency=latency,
             loss=loss,
             jitter=jitter,
+            timeout=timeout,
             traffic_port=traffic_port,
         )
     except (ProfileError, SessionError, ValueError) as exc:
@@ -116,6 +119,8 @@ def status(json_output: bool = typer.Option(False, "--json", help="Print raw JSO
     typer.echo(_format_config(payload))
     typer.echo(f"Proxy: 127.0.0.1:{payload['traffic_port']}")
     typer.echo(f"PID: {payload['pid']}")
+    if warning := payload.get("warning"):
+        typer.echo(f"Warning: {warning}")
 
 
 @app.command()
@@ -124,6 +129,41 @@ def stop() -> None:
 
     stop_session()
     typer.echo("Stopped")
+
+
+@app.command("test")
+def test_command(
+    profile: Optional[str] = typer.Option("3g", "--profile", "-p", help="Profile to test."),
+    bandwidth: Optional[str] = typer.Option(None, "--bandwidth", "-b", help="Bandwidth override."),
+    latency: Optional[str] = typer.Option(None, "--latency", "-l", help="Latency override."),
+    loss: Optional[str] = typer.Option(None, "--loss", help="Packet loss override."),
+    jitter: Optional[str] = typer.Option(None, "--jitter", "-j", help="Jitter override."),
+    bytes_count: int = typer.Option(64 * 1024, "--bytes", help="Payload size to download."),
+) -> None:
+    """Verify that traffic can flow through the NetShape proxy."""
+
+    try:
+        result = run_speed_test(
+            profile=profile,
+            bandwidth=bandwidth,
+            latency=latency,
+            loss=loss,
+            jitter=jitter,
+            byte_count=bytes_count,
+        )
+    except (ProfileError, SessionError, ValueError, OSError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    typer.echo(f"Downloaded: {result.bytes_downloaded} bytes")
+    typer.echo(f"Direct: {result.direct_seconds:.3f}s")
+    typer.echo(f"Proxied: {result.proxied_seconds:.3f}s")
+    typer.echo(f"Proxy requests: {result.requests_handled}")
+    if result.proxy_detected:
+        typer.echo("Result: proxy is handling traffic")
+    else:
+        typer.echo("Result: no proxy traffic detected")
+        raise typer.Exit(1)
 
 
 @app.command("profiles")
