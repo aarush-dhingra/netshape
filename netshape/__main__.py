@@ -1,29 +1,12 @@
-"""Command entry point for NetShape."""
+"""Command entry point for ``python -m netshape``."""
 
 from __future__ import annotations
 
-import argparse
-
-from . import __version__
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="netshape",
-        description="Run apps through a local throttling proxy.",
-    )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"netshape {__version__}",
-    )
-    return parser
+from .cli import app
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    parser.parse_args(argv)
-    parser.print_help()
+    app(args=argv, prog_name="netshape")
     return 0
 
 

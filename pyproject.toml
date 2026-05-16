@@ -25,7 +25,9 @@ classifiers = [
     "Topic :: Internet :: Proxy Servers",
     "Topic :: Software Development :: Testing",
 ]
-dependencies = []
+dependencies = [
+    "typer>=0.12",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -33,7 +35,7 @@ dev = [
 ]
 
 [project.scripts]
-netshape = "netshape.__main__:main"
+netshape = "netshape.cli:app"
 
 [tool.setuptools.packages.find]
 include = ["netshape*"]
