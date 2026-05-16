@@ -211,7 +211,7 @@ async def _test_socks5_connect_tunnels_domain_bytes() -> None:
             + struct.pack(">H", upstream_port)
         )
         await writer.drain()
-        assert await reader.readexactly(10) == b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00"
+        assert await reader.readexactly(7) == b"\x05\x00\x00\x03\x00\x00\x00"
 
         writer.write(b"hello")
         await writer.drain()
@@ -240,6 +240,31 @@ async def _test_socks5_rejects_udp_associate_for_now() -> None:
         writer.write(b"\x05\x03\x00\x01\x7f\x00\x00\x01\x00\x35")
         await writer.drain()
         assert await reader.readexactly(10) == b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00"
+        writer.close()
+        await writer.wait_closed()
+    finally:
+        await proxy.close()
+
+
+def test_socks5_rejects_unsupported_address_without_http_error() -> None:
+    asyncio.run(_test_socks5_rejects_unsupported_address_without_http_error())
+
+
+async def _test_socks5_rejects_unsupported_address_without_http_error() -> None:
+    proxy = ThrottledProxy(traffic_port=0, control_port=0, config=ThrottleConfig())
+    await proxy.start()
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", proxy.traffic_port)
+        writer.write(b"\x05\x01\x00")
+        await writer.drain()
+        assert await reader.readexactly(2) == b"\x05\x00"
+
+        writer.write(b"\x05\x01\x00\x09\x00\x50")
+        await writer.drain()
+        response = await reader.read(10)
+
+        assert response == b"\x05\x08\x00\x01\x00\x00\x00\x00\x00\x00"
+        assert not response.startswith(b"HTTP/")
         writer.close()
         await writer.wait_closed()
     finally:

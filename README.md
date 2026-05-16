@@ -49,6 +49,8 @@ NetShape sets `ALL_PROXY=socks5://127.0.0.1:<port>` for launched apps so SOCKS-a
 
 NetShape uses one shared bidirectional bandwidth bucket for each proxy session, so upload and download traffic compete for the configured capacity like a constrained network link. SOCKS5 UDP ASSOCIATE is not implemented yet.
 
+The bundled profiles are a curated mix of mobile, broadband, and constrained-network presets. They intentionally diverge from the earlier mobile-only product spec so local desktop app testing can cover Wi-Fi, DSL, cable, fiber, satellite, and congested links too.
+
 ## Testing
 
 Run the automated suite:
