@@ -1,0 +1,86 @@
+{
+  "3g": {
+    "bandwidth": "400kbps",
+    "latency": "200ms",
+    "loss": "1%",
+    "jitter": "20ms",
+    "description": "Standard 3G mobile connection"
+  },
+  "3g-fast": {
+    "bandwidth": "1.2mbps",
+    "latency": "150ms",
+    "loss": "0.5%",
+    "jitter": "15ms",
+    "description": "Good 3G / HSPA connection"
+  },
+  "3g-slow": {
+    "bandwidth": "240kbps",
+    "latency": "400ms",
+    "loss": "2%",
+    "jitter": "50ms",
+    "description": "Degraded 3G in rural area"
+  },
+  "4g": {
+    "bandwidth": "32mbps",
+    "latency": "50ms",
+    "loss": "0%",
+    "jitter": "5ms",
+    "description": "Standard 4G/LTE in urban area"
+  },
+  "lte": {
+    "bandwidth": "96mbps",
+    "latency": "30ms",
+    "loss": "0%",
+    "jitter": "3ms",
+    "description": "Fast LTE connection"
+  },
+  "edge": {
+    "bandwidth": "96kbps",
+    "latency": "500ms",
+    "loss": "2%",
+    "jitter": "40ms",
+    "description": "EDGE (2.5G) connection"
+  },
+  "2g": {
+    "bandwidth": "40kbps",
+    "latency": "800ms",
+    "loss": "5%",
+    "jitter": "100ms",
+    "description": "GPRS/2G connection"
+  },
+  "slow-wifi": {
+    "bandwidth": "8mbps",
+    "latency": "80ms",
+    "loss": "3%",
+    "jitter": "30ms",
+    "description": "Congested coffee shop WiFi"
+  },
+  "flaky-wifi": {
+    "bandwidth": "16mbps",
+    "latency": "100ms",
+    "loss": "10%",
+    "jitter": "80ms",
+    "description": "Unreliable WiFi with frequent drops"
+  },
+  "satellite": {
+    "bandwidth": "40mbps",
+    "latency": "600ms",
+    "loss": "1%",
+    "jitter": "50ms",
+    "description": "Satellite internet (high latency)"
+  },
+  "dial-up": {
+    "bandwidth": "48kbps",
+    "latency": "1000ms",
+    "loss": "5%",
+    "jitter": "200ms",
+    "description": "56k modem dial-up"
+  },
+  "offline": {
+    "bandwidth": "0kbps",
+    "latency": "0ms",
+    "loss": "100%",
+    "jitter": "0ms",
+    "description": "Complete network failure"
+  }
+}
