@@ -126,7 +126,7 @@ def parse_loss(raw: str | int | float | None) -> float:
     if isinstance(raw, (int, float)):
         if raw < 0:
             raise UnitParseError("loss must be non-negative")
-        value = raw / 100 if raw > 1 else raw
+        value = raw / 100 if raw >= 1 else raw
     else:
         value, unit = _parse_number_and_unit(raw, kind="loss")
         if unit not in {"%", "percent", "pct"}:

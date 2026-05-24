@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import http.client
 import json
 import os
@@ -13,7 +14,9 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
+
+import psutil
 
 from .profiles import resolve_settings
 from .proxy_server import ThrottleConfig, ThrottledProxy
@@ -50,6 +53,7 @@ class ProxyRunner:
     def __init__(self, proxy: ThrottledProxy) -> None:
         self.proxy = proxy
         self._ready = threading.Event()
+        self._done = threading.Event()
         self._error: BaseException | None = None
         self._thread = threading.Thread(target=self._run, name="netshape-proxy", daemon=True)
 
@@ -65,7 +69,8 @@ class ProxyRunner:
             _post_json(self.proxy.control_port, "/shutdown", {})
         except OSError:
             pass
-        self._thread.join(timeout=5)
+        self._done.wait(timeout=10)
+        self._thread.join(timeout=1)
 
     def _run(self) -> None:
         async def run_proxy() -> None:
@@ -78,6 +83,8 @@ class ProxyRunner:
         except BaseException as exc:
             self._error = exc
             self._ready.set()
+        finally:
+            self._done.set()
 
 
 def run_session(
@@ -105,10 +112,16 @@ def run_session(
     )
     if traffic_port == 0:
         resolved_traffic_port = 0
-        resolved_control_port = 0 if control_port is None else control_port
     else:
         resolved_traffic_port = _find_free_port(traffic_port)
-        resolved_control_port = control_port or _find_free_port(resolved_traffic_port + 1)
+
+    if control_port is None:
+        if traffic_port == 0:
+            resolved_control_port = 0
+        else:
+            resolved_control_port = _find_free_port(resolved_traffic_port + 1)
+    else:
+        resolved_control_port = control_port
 
     proxy = ThrottledProxy(
         traffic_port=resolved_traffic_port,
@@ -219,22 +232,76 @@ def stop_session(*, state_path: Path = DEFAULT_STATE_PATH) -> None:
         clear_state(state_path)
 
 
+_STATE_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def _exclusive_state(path: Path) -> Generator[None, None, None]:
+    """Hold an in-process threading lock + a cross-process lock file."""
+    lock_path = path.with_suffix(".lock")
+    with _STATE_LOCK:
+        _acquire_lock_file(lock_path)
+        try:
+            yield
+        finally:
+            try:
+                lock_path.unlink()
+            except OSError:
+                pass
+
+
+def _acquire_lock_file(lock_path: Path, timeout: float = 5.0) -> None:
+    """Spin-acquire an exclusive lock file, stealing a stale one after *timeout* seconds."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            try:
+                os.write(fd, str(os.getpid()).encode())
+            finally:
+                os.close(fd)
+            return
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                try:
+                    lock_path.unlink()
+                except OSError:
+                    pass
+            else:
+                time.sleep(0.02)
+
+
 def write_state(state: SessionState, path: Path = DEFAULT_STATE_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state.to_dict(), indent=2), encoding="utf-8")
+    tmp = path.with_suffix(".tmp")
+    with _exclusive_state(path):
+        tmp.write_text(json.dumps(state.to_dict(), indent=2), encoding="utf-8")
+        os.replace(tmp, path)
 
 
 def read_state(path: Path = DEFAULT_STATE_PATH) -> SessionState | None:
-    if not path.exists():
-        return None
-    return SessionState(**json.loads(path.read_text(encoding="utf-8")))
+    with _exclusive_state(path):
+        if not path.exists():
+            return None
+        try:
+            state = SessionState(**json.loads(path.read_text(encoding="utf-8")))
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not _is_pid_alive(state.pid):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return None
+        return state
 
 
 def clear_state(path: Path = DEFAULT_STATE_PATH) -> None:
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
+    with _exclusive_state(path):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _proxy_env(env: dict[str, str], traffic_port: int) -> dict[str, str]:
@@ -248,11 +315,19 @@ def _proxy_env(env: dict[str, str], traffic_port: int) -> dict[str, str]:
             "HTTPS_PROXY": http_proxy_url,
             "http_proxy": http_proxy_url,
             "https_proxy": http_proxy_url,
-            "NO_PROXY": "localhost,127.0.0.1",
-            "no_proxy": "localhost,127.0.0.1",
+            "NO_PROXY": "localhost,127.0.0.1,::1",
+            "no_proxy": "localhost,127.0.0.1,::1",
         }
     )
     return env
+
+
+def _is_pid_alive(pid: int) -> bool:
+    try:
+        psutil.Process(pid)
+        return True
+    except psutil.NoSuchProcess:
+        return False
 
 
 def _find_free_port(starting: int, *, attempts: int = 100) -> int:
@@ -262,7 +337,7 @@ def _find_free_port(starting: int, *, attempts: int = 100) -> int:
                 sock.bind(("127.0.0.1", port))
             except OSError:
                 continue
-            return port
+            return int(sock.getsockname()[1])
     ending = starting + attempts - 1
     raise SessionError(f"no free TCP port found on 127.0.0.1 in range {starting}-{ending}")
 

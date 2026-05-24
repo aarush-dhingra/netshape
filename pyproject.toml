@@ -28,11 +28,13 @@ classifiers = [
 dependencies = [
     "rich>=13",
     "typer>=0.12",
+    "psutil>=5.9",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
+    "pytest-asyncio>=0.25",
 ]
 
 [project.scripts]
@@ -47,3 +49,4 @@ netshape = ["data/*.json"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+asyncio_mode = "auto"

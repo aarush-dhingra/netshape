@@ -101,7 +101,13 @@ def should_drop_chunk(
     *,
     random_value: Callable[[], float] = random.random,
 ) -> bool:
-    """Return whether a chunk should be dropped for the configured loss rate."""
+    """Return whether a read chunk (~8 KB) should be dropped for the configured loss rate.
+
+    This operates at the read-buffer level, not the TCP-packet level.  A userspace
+    proxy cannot intercept individual packets, so loss is simulated by randomly
+    discarding entire ``READ_CHUNK_SIZE`` chunks.  The statistical effect on
+    throughput is equivalent to packet loss for sustained transfers.
+    """
 
     if loss_pct < 0 or loss_pct > 1:
         raise ValueError("loss_pct must be between 0.0 and 1.0")
