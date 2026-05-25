@@ -117,6 +117,8 @@ class ThrottledProxy:
         protocol = "http"
         reply_sent = False
         try:
+            if should_drop_chunk(self.config.loss_pct):
+                return
             first_byte = await reader.readexactly(1)
             if first_byte == b"\x05":
                 protocol = "socks5"
@@ -142,7 +144,10 @@ class ThrottledProxy:
                 await self._send_error(writer, 502)
         finally:
             writer.close()
-            await writer.wait_closed()
+            try:
+                await writer.wait_closed()
+            except (ConnectionResetError, OSError):
+                pass
             self._active_writers.discard(writer)
 
     async def _handle_connect(
@@ -225,7 +230,10 @@ class ThrottledProxy:
             await asyncio.gather(*done, *pending, return_exceptions=True)
         finally:
             upstream_writer.close()
-            await upstream_writer.wait_closed()
+            try:
+                await upstream_writer.wait_closed()
+            except (ConnectionResetError, OSError):
+                pass
             self._active_writers.discard(upstream_writer)
 
     async def _handle_http(
@@ -275,7 +283,10 @@ class ThrottledProxy:
             await self._pipe(upstream_reader, client_writer, direction="received", connection_start=connection_start)
         finally:
             upstream_writer.close()
-            await upstream_writer.wait_closed()
+            try:
+                await upstream_writer.wait_closed()
+            except (ConnectionResetError, OSError):
+                pass
             self._active_writers.discard(upstream_writer)
 
     async def _pipe(
@@ -306,9 +317,6 @@ class ThrottledProxy:
         wait = self.bucket.consume(len(chunk))
         if wait:
             await asyncio.sleep(wait)
-
-        if should_drop_chunk(self.config.loss_pct):
-            return
 
         writer.write(chunk)
         await writer.drain()
@@ -357,7 +365,10 @@ class ThrottledProxy:
             await self._send_json(writer, {"error": str(exc)}, status=400)
         finally:
             writer.close()
-            await writer.wait_closed()
+            try:
+                await writer.wait_closed()
+            except (ConnectionResetError, OSError):
+                pass
 
     def _status_payload(self) -> dict[str, Any]:
         payload = self.config.to_dict()

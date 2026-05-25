@@ -152,7 +152,7 @@ def run_session(
     write_state(state, state_path)
 
     env = _proxy_env(os.environ.copy(), proxy.traffic_port)
-    process = subprocess.Popen(command, env=env)
+    process = subprocess.Popen(command, env=env, shell=(sys.platform == "win32"))
     timeout_seconds = None if timeout is None else parse_duration_ms(timeout, kind="timeout") / 1000
     timeout_timer: threading.Timer | None = None
     if timeout_seconds is not None and timeout_seconds > 0:
