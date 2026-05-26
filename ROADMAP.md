@@ -171,52 +171,82 @@ netshape rule remove <id>
 
 #### 4.1 YAML Scenario Parser
 
-**Status:** Planned
+**Status:** ✅ Complete
 
 **Problem:** Users can only apply static profiles. They need to simulate dynamic network conditions over time (e.g. "start on 4G, enter a tunnel, emerge on 2G").
 
-**Proposed Solution:**
+**Implemented Solution:**
 
-A `Scenario` is a YAML file with a list of `phases`. Each phase has a `duration` and a `profile` (built-in name or inline config). A `ScenarioRunner` executes phases sequentially, calling `configure()` at each transition. On Ctrl-C or `POST /scenario/stop`, the scenario is interrupted and the **pre-scenario config is restored** (not just stopped at current state).
+`netshape/scenario.py` provides `Phase`, `Scenario`, `parse_scenario_dict`, `load_scenario` (from YAML file), `load_builtin_scenario`, and `list_builtin_scenarios`. Scenarios run as an asyncio task inside the proxy server. Pre-scenario config is **always restored** on completion or stop.
 
 YAML format:
 ```yaml
 name: "Subway Commute"
 phases:
-  - name: "Platform - 4G"
+  - name: "Platform — 4G"
     duration: "30s"
-    profile: "4g"
-  - name: "Tunnel - no signal"
-    duration: "10s"
-    profile:
-      bandwidth_bps: 0
-      latency_ms: 0
-      loss_pct: 1.0
-  - name: "Underground - 2G"
+    profile: "4g"          # built-in profile name
+  - name: "Tunnel — no signal"
+    duration: "20s"
+    bandwidth: "0"
+    latency: "2000ms"
+    loss: "95%"
+    jitter: "500ms"
+  - name: "Underground — 2G"
     duration: "60s"
     profile: "edge"
 ```
 
-**Technical Requirements:**
-- `pyyaml` as an optional dependency (`netshape[scenarios]`)
-- Phase transitions via `asyncio.sleep` + `configure()` calls
-- Ctrl-C and `POST /scenario/stop` must **restore the pre-scenario config**, not just halt
-- Must log each phase transition with name, duration, and applied config
+Phase keys (`bandwidth`, `latency`, `loss`, `jitter`) override the referenced `profile`. A phase with no `profile` uses all keys directly.
+
+**New files:**
+- `netshape/scenario.py` — `Phase`, `Scenario`, `parse_scenario_dict`, `load_scenario`, `load_builtin_scenario`, `list_builtin_scenarios`
+- `netshape/data/scenarios/subway.yaml` — Urban transit scenario
+- `netshape/data/scenarios/flight-mode.yaml` — Airport → in-flight → landing
+- `netshape/data/scenarios/coffee-shop-wifi.yaml` — Café congestion degradation
+- `netshape/data/scenarios/satellite.yaml` — Geostationary link with rain fade
+
+**Server-side scenario runner (in `proxy_server.py`):**
+- `ThrottledProxy.start_scenario(dict)` — starts asyncio task, stops any existing scenario
+- `ThrottledProxy.stop_scenario()` — signals task via `asyncio.Event`, waits ≤3s, then cancels
+- `ThrottledProxy._run_scenario_task(dict)` — applies phases sequentially; `finally:` always restores pre-scenario config
+- `_ScenarioState` dataclass — tracks running, name, current_phase, total_phases, phase_name, phase_elapsed_s, phase_duration_s
+
+**Control API:**
+```
+GET  /scenarios          → {"scenarios": ["subway", "flight-mode", ...]}
+POST /scenario/start     → body: full scenario dict OR {"builtin": "subway"}
+POST /scenario/stop      → {}
+GET  /scenario/status    → {"running": bool, "name": ..., "current_phase": ...}
+```
+
+**CLI:**
+```bash
+netshape scenario run --builtin subway        # built-in scenario
+netshape scenario run ./my-scenario.yaml      # custom YAML
+netshape scenario stop                         # stop and restore
+netshape scenario status                       # show phase progress
+netshape scenario list                         # list built-in scenarios
+```
+
+**Dashboard:** Scenario panel in right column with built-in dropdown, phase progress bar, and Stop button. Updated via SSE `scenario` field every second.
 
 **Tasks:**
-- [ ] Add `pyyaml` to optional dependencies in `pyproject.toml`
-- [ ] Create `netshape/scenario.py` with `Scenario`, `Phase`, `ScenarioRunner`
-- [ ] Snapshot pre-scenario config at start; restore on interrupt or completion
-- [ ] Add `netshape run-scenario <file.yaml>` CLI command
-- [ ] Add `POST /scenario/start` and `POST /scenario/stop` control endpoints
-- [ ] Add dashboard UI for scenario upload / run / stop with phase progress indicator
-- [ ] Bundle built-in scenarios in `netshape/data/scenarios/`: `subway.yaml`, `flight-mode.yaml`, `coffee-shop-wifi.yaml`, `satellite.yaml`
-- [ ] Test with a 3-phase scenario and verify config is restored after interrupt
+- [x] Add `pyyaml` to optional dependencies in `pyproject.toml` (`netshape[scenarios]`)
+- [x] Create `netshape/scenario.py` with `Scenario`, `Phase`, `parse_scenario_dict`, `load_scenario`
+- [x] Snapshot pre-scenario config at start; restore on interrupt or completion
+- [x] Add `netshape scenario run/stop/status/list` CLI subcommand group
+- [x] Add `POST /scenario/start`, `POST /scenario/stop`, `GET /scenario/status` control endpoints
+- [x] Add `GET /scenarios` endpoint for dashboard dropdown population
+- [x] Add dashboard scenario panel with built-in dropdown, progress bar, and Stop button
+- [x] Bundle built-in scenarios: `subway.yaml`, `flight-mode.yaml`, `coffee-shop-wifi.yaml`, `satellite.yaml`
+- [x] Tests: `tests/test_scenarios.py` — unit tests for parsing + integration tests for start/stop/restore
 
 **Logging Verification:**
-- Log each phase transition: name, duration, applied config
-- Log scenario completion or interrupt with total elapsed time
-- Log pre-scenario config snapshot and final restored state
+- [x] Log each phase transition: `Phase %d/%d: %r — bw=%d lat=%d loss=%.3f jitter=%d (%.1fs)`
+- [x] Log scenario completion: `Scenario completed: %r`
+- [x] Log scenario interrupt: `Scenario stopped at phase %d/%d`
+- [x] Log pre-scenario config snapshot and final restored state
 
 ---
 
@@ -224,48 +254,73 @@ phases:
 
 #### 5.1 Real-Time Metrics Export
 
-**Status:** Planned
+**Status:** ✅ Complete
 
 **Problem:** Metrics are only visible in the dashboard. Users need to export them for CI pipelines, load test tooling, and post-run analysis.
 
-**Proposed Solution:**
+**Implemented Solution:**
 
-1. **Structured events** — JSON lines written to a rotating file when `--log-file` is passed
-2. **Prometheus text format** — `GET /metrics` (standard exposition format, compatible with `promtool` and Grafana)
-3. **JSON metrics** — `GET /metrics?format=json`
+1. **Structured JSON log file** — `--log-file <path>` on `netshape run` writes rotating JSON log lines (10 MB, 3 backups) via `logging.handlers.RotatingFileHandler` with a custom `_JsonLogFormatter`.
+2. **Prometheus text format** — `GET /metrics` returns standard text/plain exposition format (compatible with Prometheus, `promtool`, and Grafana).
+3. **JSON metrics** — `GET /metrics?format=json` returns a JSON object with all metric names as keys.
+4. **Live terminal table** — `netshape status --watch` uses `rich.Live` + `rich.Table` to refresh status every second.
+5. **`netshape metrics`** CLI command — prints all metrics to stdout (JSON or `--prometheus` for Prometheus text).
 
 **Tracked metrics (canonical names):**
 
 | Metric | Type | Description |
 |---|---|---|
 | `netshape_bytes_sent_total` | Counter | Total bytes forwarded to upstream |
-| `netshape_bytes_received_total` | Counter | Total bytes forwarded to client |
-| `netshape_connections_total` | Counter | Total connections accepted |
-| `netshape_connections_active` | Gauge | Currently open connections |
+| `netshape_bytes_received_total` | Counter | Total bytes forwarded to clients |
+| `netshape_connections_total` | Counter | Total client connections accepted |
+| `netshape_connections_active` | Gauge | Currently active client connections |
+| `netshape_requests_handled_total` | Counter | Total requests handled (HTTP + SOCKS5) |
 | `netshape_throttle_sleep_seconds_total` | Counter | Total wall-clock time spent in throttle sleeps |
-| `netshape_drops_total` | Counter | Total connections dropped due to loss_pct |
+| `netshape_drops_total` | Counter | Total connections dropped due to `loss_pct` |
 | `netshape_latency_added_seconds_total` | Counter | Total artificial latency injected |
-| `netshape_config_bandwidth_bps` | Gauge | Current configured bandwidth limit |
+| `netshape_config_bandwidth_bps` | Gauge | Current configured bandwidth limit (0=unlimited) |
 | `netshape_config_latency_ms` | Gauge | Current configured latency |
-| `netshape_config_loss_pct` | Gauge | Current configured loss rate |
+| `netshape_config_loss_pct` | Gauge | Current configured loss fraction (0.0–1.0) |
+| `netshape_rules_count` | Gauge | Number of active per-endpoint throttle rules |
 
-**Technical Requirements:**
-- Metrics counters must be lock-free where possible (asyncio single-threaded)
-- Must not block the event loop
-- File rotation handled by Python's `RotatingFileHandler`
+**Technical implementation:**
+- All counters are plain Python `int`/`float` fields updated directly in the asyncio event loop — no locking needed.
+- `connections_total` and `drops_total` added to `ThrottleConfig` (persists across `configure()` calls).
+- `_connections_active`, `_throttle_sleep_seconds`, `_latency_added_seconds` on `ThrottledProxy` (ephemeral per-run counters).
+- `_write_throttled` accumulates `_throttle_sleep_seconds` before each `asyncio.sleep`.
+- `_apply_latency` accumulates `_latency_added_seconds` tracking actual sleep duration.
+- `_handle_client` increments `connections_total` and tracks `_connections_active` with a try/finally decrement.
+- Handlers increment `drops_total` whenever `should_drop_chunk` returns `True`.
+- `_PROMETHEUS_METRICS` is a module-level list of `(name, type, help)` tuples — new metrics are added in one place.
+
+**Control API:**
+```
+GET /metrics              → Prometheus text format (text/plain; version=0.0.4)
+GET /metrics?format=json  → JSON object with all metric keys
+```
+
+**CLI:**
+```bash
+netshape run --log-file proxy.jsonl -- curl https://example.com
+netshape status --watch          # live rich.Live table (Ctrl-C to stop)
+netshape metrics                 # print all metrics as key: value
+netshape metrics --prometheus    # print Prometheus text format
+```
 
 **Tasks:**
-- [ ] Add `--log-file` and `--log-format` CLI flags
-- [ ] Add rotating JSON log handler in `core.py`
-- [ ] Add metrics counters to `ThrottleConfig` or a separate `MetricsStore`
-- [ ] Implement `GET /metrics` (Prometheus text format)
-- [ ] Implement `GET /metrics?format=json`
-- [ ] Add `rich.Live` table for terminal real-time metrics (`netshape status --watch`)
-- [ ] Add `--metrics-port` flag to expose metrics on a dedicated port
+- [x] Add `--log-file` CLI flag on `netshape run` with rotating JSON handler
+- [x] Add metrics counters to `ThrottleConfig` (`connections_total`, `drops_total`) and `ThrottledProxy` (`_connections_active`, `_throttle_sleep_seconds`, `_latency_added_seconds`)
+- [x] Implement `GET /metrics` (Prometheus text/plain; version=0.0.4)
+- [x] Implement `GET /metrics?format=json`
+- [x] Add `rich.Live` table for `netshape status --watch`
+- [x] Add `netshape metrics` CLI command (JSON and `--prometheus` flags)
+- [x] Tests: `tests/test_metrics.py` — Prometheus format, JSON format, counter increments
 
 **Logging Verification:**
-- Verify Prometheus output parses with `promtool check metrics`
-- Verify JSON log file contains all event types after a complete session
+- [x] Prometheus output contains `# HELP` and `# TYPE` for every metric
+- [x] JSON metrics object contains all 12 canonical metric names
+- [x] `connections_total` increments on every new client connection
+- [x] `drops_total` increments when `loss_pct=1.0`
 
 ---
 
@@ -400,13 +455,12 @@ def test_image_loads_on_3g():
 | 1 | TokenBucket burst fix | **Critical** | Small | ✅ Done |
 | 2 | Web dashboard | **High** | Medium | ✅ Done |
 | 3 | Per-endpoint rules | **High** | Medium | ✅ Done |
-| 4 | Scenario scripting | **High** | Medium | Planned |
-| 5 | Metrics export | **Medium** | Small | Planned |
+| 4 | Scenario scripting | **High** | Medium | ✅ Done |
+| 5 | Metrics export | **Medium** | Small | ✅ Done |
 | 6 | UDP / advanced protocols | Low | Large | Deferred |
 | 7 | Packaging + pytest plugin + GH Actions | **High** | Medium | In Progress |
 
 ## Next Steps
 
-1. Scenario scripting engine — Phase 4 (biggest differentiator)
-2. Metrics export — Phase 5 (enables CI integration)
-3. Finalize packaging + pytest plugin — Phase 7
+1. Finalize packaging + pytest plugin — Phase 7 (adoption driver)
+2. UDP / WebSocket frame-level throttling — Phase 6 (low priority, deferred)

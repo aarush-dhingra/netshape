@@ -258,6 +258,7 @@ function startEventSource() {
       const data = JSON.parse(event.data);
       updateStatus(data);
       updateCharts(data);
+      if (data.scenario) updateScenarioUI(data.scenario);
     } catch (err) {
       console.error('Failed to parse SSE data:', err);
     }
@@ -305,9 +306,89 @@ async function refreshLogs() {
 
 setInterval(refreshLogs, 3000);
 
+// ─── SCENARIO ─────────────────────────────────────────────────────────────
+const scenarioSelect = document.getElementById('scenario-select');
+const runScenarioBtn = document.getElementById('run-scenario-btn');
+const stopScenarioBtn = document.getElementById('stop-scenario-btn');
+const scenarioIdleControls = document.getElementById('scenario-idle-controls');
+const scenarioRunning = document.getElementById('scenario-running');
+const scenarioNameDisplay = document.getElementById('scenario-name-display');
+const scenarioPhaseDisplay = document.getElementById('scenario-phase-display');
+const scenarioProgress = document.getElementById('scenario-progress');
+const scenarioTimeDisplay = document.getElementById('scenario-time-display');
+const scenarioStatusMsg = document.getElementById('scenario-status-msg');
+
+async function loadBuiltinScenarios() {
+  try {
+    const res = await fetch('/scenarios');
+    if (!res.ok) return;
+    const data = await res.json();
+    const names = data.scenarios || [];
+    names.forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      scenarioSelect?.appendChild(opt);
+    });
+    if (runScenarioBtn) runScenarioBtn.disabled = names.length === 0;
+  } catch (_) {}
+}
+
+function updateScenarioUI(scenarioData) {
+  if (!scenarioIdleControls) return;
+  const running = scenarioData?.running;
+  scenarioIdleControls.style.display = running ? 'none' : 'block';
+  if (scenarioRunning) scenarioRunning.style.display = running ? 'block' : 'none';
+  if (!running) return;
+
+  if (scenarioNameDisplay) scenarioNameDisplay.textContent = scenarioData.name || '';
+  if (scenarioPhaseDisplay) {
+    scenarioPhaseDisplay.textContent =
+      `Phase ${scenarioData.current_phase}/${scenarioData.total_phases}: ${scenarioData.phase_name || ''}`;
+  }
+  const duration = scenarioData.phase_duration_s || 0;
+  const elapsed = scenarioData.phase_elapsed_s || 0;
+  const pct = duration > 0 ? Math.min(100, (elapsed / duration) * 100) : 0;
+  if (scenarioProgress) scenarioProgress.value = pct;
+  if (scenarioTimeDisplay) {
+    scenarioTimeDisplay.textContent = `${elapsed.toFixed(0)}s / ${duration.toFixed(0)}s`;
+  }
+}
+
+runScenarioBtn?.addEventListener('click', async () => {
+  const name = scenarioSelect?.value;
+  if (!name) return;
+  try {
+    await fetch('/scenario/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ builtin: name }),
+    });
+    if (scenarioStatusMsg) {
+      scenarioStatusMsg.textContent = `Started: ${name}`;
+      setTimeout(() => { scenarioStatusMsg.textContent = ''; }, 3000);
+    }
+  } catch (err) {
+    if (scenarioStatusMsg) scenarioStatusMsg.textContent = 'Failed to start scenario.';
+  }
+});
+
+stopScenarioBtn?.addEventListener('click', async () => {
+  try {
+    await fetch('/scenario/stop', { method: 'POST', body: '{}' });
+    if (scenarioStatusMsg) {
+      scenarioStatusMsg.textContent = 'Scenario stopped.';
+      setTimeout(() => { scenarioStatusMsg.textContent = ''; }, 3000);
+    }
+  } catch (err) {
+    if (scenarioStatusMsg) scenarioStatusMsg.textContent = 'Failed to stop scenario.';
+  }
+});
+
 // ─── INIT ─────────────────────────────────────────────────────────────────
 (async function init() {
   updateSliderLabels();
+  loadBuiltinScenarios();
 
   // Fetch current config
   try {

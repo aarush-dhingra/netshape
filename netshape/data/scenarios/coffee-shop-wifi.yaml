@@ -1,0 +1,30 @@
+name: "Coffee Shop WiFi"
+description: "Café network: decent at first, degrades as more customers join, then packet-loss hell."
+
+phases:
+  - name: "Morning — Quiet Café"
+    duration: "20s"
+    bandwidth: "10mbps"
+    latency: "25ms"
+    loss: "0%"
+
+  - name: "Lunch Rush — Congested"
+    duration: "30s"
+    bandwidth: "1mbps"
+    latency: "150ms"
+    loss: "2%"
+    jitter: "40ms"
+
+  - name: "Peak — Packet Loss Hell"
+    duration: "20s"
+    bandwidth: "500kbps"
+    latency: "400ms"
+    loss: "10%"
+    jitter: "100ms"
+
+  - name: "Afternoon — Recovering"
+    duration: "20s"
+    bandwidth: "3mbps"
+    latency: "60ms"
+    loss: "1%"
+    jitter: "20ms"

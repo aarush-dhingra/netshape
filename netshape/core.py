@@ -20,7 +20,7 @@ import psutil
 
 from .profiles import resolve_settings
 from .proxy_server import ThrottleConfig, ThrottledProxy
-from .units import parse_bandwidth, parse_duration_ms, parse_latency, parse_loss
+from .units import parse_bandwidth, parse_duration_ms, parse_jitter, parse_latency, parse_loss
 
 DEFAULT_TRAFFIC_PORT = 8090
 DEFAULT_STATE_PATH = Path.home() / ".netshape" / "state.json"
@@ -426,6 +426,59 @@ def list_rules(*, state_path: Path = DEFAULT_STATE_PATH) -> list[dict[str, Any]]
         raise SessionError("no active NetShape session")
     result = _get_json(state.control_port, "/rules")
     return result.get("rules", [])
+
+
+def start_scenario_on_session(
+    scenario_dict: dict[str, Any],
+    *,
+    state_path: Path = DEFAULT_STATE_PATH,
+) -> dict[str, Any]:
+    """Send a scenario to the running proxy. Returns initial scenario state."""
+    state = read_state(state_path)
+    if state is None:
+        raise SessionError("no active NetShape session")
+    return _post_json(state.control_port, "/scenario/start", scenario_dict)
+
+
+def stop_scenario_on_session(*, state_path: Path = DEFAULT_STATE_PATH) -> dict[str, Any]:
+    """Signal the running scenario to stop."""
+    state = read_state(state_path)
+    if state is None:
+        raise SessionError("no active NetShape session")
+    return _post_json(state.control_port, "/scenario/stop", {})
+
+
+def get_scenario_status(*, state_path: Path = DEFAULT_STATE_PATH) -> dict[str, Any]:
+    """Return the current scenario execution status from the running proxy."""
+    state = read_state(state_path)
+    if state is None:
+        raise SessionError("no active NetShape session")
+    return _get_json(state.control_port, "/scenario/status")
+
+
+def get_metrics(*, state_path: Path = DEFAULT_STATE_PATH) -> dict[str, Any]:
+    """Fetch proxy metrics as JSON."""
+    state = read_state(state_path)
+    if state is None:
+        raise SessionError("no active NetShape session")
+    return _get_json(state.control_port, "/metrics?format=json")
+
+
+def get_metrics_prometheus(*, state_path: Path = DEFAULT_STATE_PATH) -> str:
+    """Fetch proxy metrics in Prometheus text format."""
+    state = read_state(state_path)
+    if state is None:
+        raise SessionError("no active NetShape session")
+    conn = http.client.HTTPConnection("127.0.0.1", state.control_port, timeout=5)
+    try:
+        conn.request("GET", "/metrics")
+        response = conn.getresponse()
+        data = response.read()
+        if response.status >= 400:
+            raise SessionError(data.decode("utf-8") or f"HTTP {response.status}")
+        return data.decode("utf-8")
+    finally:
+        conn.close()
 
 
 def python_command(code: str) -> list[str]:

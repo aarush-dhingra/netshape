@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
+import logging.handlers
+import time
+from pathlib import Path
 from typing import Optional
 
 import typer
@@ -12,10 +16,15 @@ from .core import (
     SessionError,
     add_rule,
     adjust_session,
+    get_metrics,
+    get_metrics_prometheus,
+    get_scenario_status,
     get_status,
     list_rules,
     remove_rule,
     run_session,
+    start_scenario_on_session,
+    stop_scenario_on_session,
     stop_session,
 )
 from .profiles import ProfileError, list_builtin_profiles
@@ -56,8 +65,12 @@ def run(
     jitter: Optional[str] = typer.Option(None, "--jitter", "-j", help="Jitter, e.g. 50ms."),
     timeout: Optional[str] = typer.Option(None, "--timeout", "-t", help="Auto-stop after a duration, e.g. 30m."),
     traffic_port: int = typer.Option(8090, "--port", help="Traffic proxy port."),
+    log_file: Optional[Path] = typer.Option(None, "--log-file", help="Write JSON log lines to this file (rotating, 10 MB)."),
 ) -> None:
     """Launch a command with HTTP_PROXY and HTTPS_PROXY pointing at NetShape."""
+
+    if log_file is not None:
+        _setup_json_log_file(log_file)
 
     command = list(ctx.args)
     if command and command[0] == "--":
@@ -107,8 +120,15 @@ def adjust(
 
 
 @app.command()
-def status(json_output: bool = typer.Option(False, "--json", help="Print raw JSON status.")) -> None:
+def status(
+    json_output: bool = typer.Option(False, "--json", help="Print raw JSON status."),
+    watch: bool = typer.Option(False, "--watch", "-w", help="Refresh status every second (Ctrl-C to stop)."),
+) -> None:
     """Show the active NetShape session status."""
+
+    if watch:
+        _watch_status()
+        return
 
     try:
         payload = get_status()
@@ -266,6 +286,216 @@ def rule_list(json_output: bool = typer.Option(False, "--json", help="Print raw 
         if rule.get("comment"):
             parts.append(f"({rule['comment']})")
         typer.echo("  ".join(parts))
+
+
+scenario_app = typer.Typer(help="Run and manage network condition scenarios.", no_args_is_help=True)
+app.add_typer(scenario_app, name="scenario")
+
+
+@scenario_app.command("run")
+def scenario_run(
+    scenario_file: Optional[Path] = typer.Argument(None, help="Path to a .yaml scenario file."),
+    builtin: Optional[str] = typer.Option(None, "--builtin", "-b", help="Run a built-in scenario by name."),
+    no_wait: bool = typer.Option(False, "--no-wait", help="Submit scenario and return immediately."),
+) -> None:
+    """Run a scenario against the active proxy session.
+
+    Examples:\n
+      netshape scenario run --builtin subway\n
+      netshape scenario run ./my-scenario.yaml
+    """
+    try:
+        if builtin:
+            scenario_dict: dict = {"builtin": builtin}
+        elif scenario_file:
+            from .scenario import ScenarioError, load_scenario
+            try:
+                scenario = load_scenario(scenario_file)
+            except ScenarioError as exc:
+                typer.echo(f"Error: {exc}", err=True)
+                raise typer.Exit(1) from exc
+            scenario_dict = scenario.to_dict()
+        else:
+            typer.echo("Error: provide a scenario file or --builtin <name>", err=True)
+            raise typer.Exit(1)
+
+        start_scenario_on_session(scenario_dict)
+        typer.echo(f"Scenario started.")
+
+        if no_wait:
+            return
+
+        typer.echo("Press Ctrl-C to stop early.\n")
+        try:
+            while True:
+                st = get_scenario_status()
+                if not st.get("running"):
+                    typer.echo("Scenario completed.")
+                    break
+                pct = 0.0
+                if st.get("phase_duration_s", 0) > 0:
+                    pct = st.get("phase_elapsed_s", 0) / st["phase_duration_s"] * 100
+                typer.echo(
+                    f"  Phase {st.get('current_phase')}/{st.get('total_phases')}  "
+                    f"{st.get('phase_name', '?')!r}  "
+                    f"{st.get('phase_elapsed_s', 0):.0f}s / {st.get('phase_duration_s', 0):.0f}s "
+                    f"({pct:.0f}%)",
+                    nl=True,
+                )
+                time.sleep(1)
+        except KeyboardInterrupt:
+            typer.echo("\nStopping scenario…")
+            stop_scenario_on_session()
+            typer.echo("Scenario stopped and pre-scenario config restored.")
+    except SessionError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+
+@scenario_app.command("stop")
+def scenario_stop() -> None:
+    """Stop the running scenario and restore the pre-scenario configuration."""
+    try:
+        stop_scenario_on_session()
+    except SessionError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo("Scenario stopped.")
+
+
+@scenario_app.command("status")
+def scenario_status(json_output: bool = typer.Option(False, "--json")) -> None:
+    """Show the current scenario execution status."""
+    try:
+        st = get_scenario_status()
+    except SessionError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    if json_output:
+        typer.echo(json.dumps(st, indent=2))
+        return
+    if not st.get("running"):
+        typer.echo("No scenario running.")
+        return
+    typer.echo(f"Scenario: {st.get('name')!r}")
+    typer.echo(f"Phase {st.get('current_phase')}/{st.get('total_phases')}: {st.get('phase_name')!r}")
+    typer.echo(f"  {st.get('phase_elapsed_s', 0):.1f}s / {st.get('phase_duration_s', 0):.1f}s")
+
+
+@scenario_app.command("list")
+def scenario_list() -> None:
+    """List available built-in scenarios."""
+    from .scenario import list_builtin_scenarios
+    names = list_builtin_scenarios()
+    if not names:
+        typer.echo("No built-in scenarios found. Make sure pyyaml is installed.")
+        return
+    for name in names:
+        typer.echo(f"  {name}")
+
+
+# ── Metrics command ───────────────────────────────────────────────────────────
+
+@app.command("metrics")
+def metrics_command(
+    prometheus: bool = typer.Option(False, "--prometheus", "-p", help="Output Prometheus text format."),
+) -> None:
+    """Show proxy metrics (requests, bytes, throttle, drops, latency)."""
+    try:
+        if prometheus:
+            typer.echo(get_metrics_prometheus(), nl=False)
+        else:
+            data = get_metrics()
+            for key, val in data.items():
+                typer.echo(f"{key}: {val}")
+    except SessionError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+
+# ── Live watch ────────────────────────────────────────────────────────────────
+
+def _watch_status() -> None:
+    from rich.console import Console
+    from rich.live import Live
+    from rich.table import Table
+
+    console = Console()
+    with Live(console=console, refresh_per_second=2) as live:
+        try:
+            while True:
+                try:
+                    payload = get_status()
+                except SessionError:
+                    live.update("[red]No active session[/red]")
+                    time.sleep(1)
+                    continue
+                live.update(_make_watch_table(payload))
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+
+
+def _make_watch_table(payload: dict) -> "Table":
+    from rich import box
+    from rich.table import Table
+
+    active = payload.get("active", False)
+    title = "[green]NetShape — Active[/green]" if active else "[red]NetShape — Inactive[/red]"
+    t = Table(title=title, box=box.ROUNDED, show_header=False, expand=True)
+    t.add_column(style="bold cyan", min_width=28)
+    t.add_column()
+
+    if not active:
+        return t
+
+    bw = payload.get("bandwidth_bps", 0)
+    bw_str = "Unlimited" if bw == 0 else f"{bw:,} bps"
+    t.add_row("Bandwidth", bw_str)
+    t.add_row("Latency", f"{payload.get('latency_ms', 0)} ms")
+    t.add_row("Loss", f"{float(payload.get('loss_pct', 0)) * 100:g}%")
+    t.add_row("Jitter", f"{payload.get('jitter_ms', 0)} ms")
+    t.add_section()
+    t.add_row("Proxy port", str(payload.get("traffic_port", "?")))
+    t.add_row("PID", str(payload.get("pid", "?")))
+    t.add_row("Uptime", f"{payload.get('running_for_seconds', 0):.0f}s")
+    t.add_section()
+    t.add_row("Requests handled", str(payload.get("requests_handled", 0)))
+    t.add_row("Connections total", str(payload.get("connections_total", 0)))
+    t.add_row("Connections active", str(payload.get("connections_active", 0)))
+    t.add_row("Drops (loss)", str(payload.get("drops_total", 0)))
+    t.add_row("Bytes sent", f"{payload.get('bytes_sent', 0):,}")
+    t.add_row("Bytes received", f"{payload.get('bytes_received', 0):,}")
+    t.add_row("Active rules", str(payload.get("rules_count", 0)))
+    if payload.get("scenario_running"):
+        t.add_section()
+        t.add_row("Scenario", "[yellow]Running[/yellow]")
+    if warning := payload.get("warning"):
+        t.add_section()
+        t.add_row("[yellow]Warning[/yellow]", warning)
+    return t
+
+
+# ── Log file setup ────────────────────────────────────────────────────────────
+
+class _JsonLogFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        return json.dumps({
+            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
+            "level": record.levelname,
+            "name": record.name,
+            "msg": record.getMessage(),
+        })
+
+
+def _setup_json_log_file(path: Path) -> None:
+    handler = logging.handlers.RotatingFileHandler(
+        path, maxBytes=10 * 1024 * 1024, backupCount=3, encoding="utf-8"
+    )
+    handler.setFormatter(_JsonLogFormatter())
+    root = logging.getLogger("netshape")
+    root.addHandler(handler)
+    root.setLevel(logging.DEBUG)
 
 
 def _format_config(config: dict[str, object]) -> str:

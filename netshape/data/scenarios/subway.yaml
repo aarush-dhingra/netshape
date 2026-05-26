@@ -1,0 +1,29 @@
+name: "Subway Commute"
+description: "Urban transit — strong 4G above ground, dead zone underground, weak 2G on re-emergence."
+
+phases:
+  - name: "Platform — 4G"
+    duration: "30s"
+    profile: "4g"
+
+  - name: "Entering Tunnel"
+    duration: "8s"
+    bandwidth: "500kbps"
+    latency: "200ms"
+    loss: "5%"
+    jitter: "50ms"
+
+  - name: "Underground — No Signal"
+    duration: "20s"
+    bandwidth: "0"
+    latency: "2000ms"
+    loss: "95%"
+    jitter: "500ms"
+
+  - name: "Emerging — 2G Edge"
+    duration: "10s"
+    profile: "edge"
+
+  - name: "Next Platform — 4G Restored"
+    duration: "30s"
+    profile: "4g"

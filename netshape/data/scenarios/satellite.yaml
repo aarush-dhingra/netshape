@@ -1,0 +1,38 @@
+name: "Satellite Internet"
+description: "Geostationary satellite link — moderate bandwidth but brutal latency and occasional outages."
+
+phases:
+  - name: "Clear Sky — Stable Link"
+    duration: "30s"
+    profile: "satellite"
+
+  - name: "Cloud Cover — Degraded"
+    duration: "20s"
+    bandwidth: "2mbps"
+    latency: "750ms"
+    loss: "3%"
+    jitter: "120ms"
+
+  - name: "Heavy Rain Fade"
+    duration: "15s"
+    bandwidth: "500kbps"
+    latency: "1200ms"
+    loss: "15%"
+    jitter: "200ms"
+
+  - name: "Outage"
+    duration: "10s"
+    bandwidth: "0"
+    latency: "3000ms"
+    loss: "99%"
+
+  - name: "Re-acquiring Signal"
+    duration: "10s"
+    bandwidth: "1mbps"
+    latency: "900ms"
+    loss: "5%"
+    jitter: "150ms"
+
+  - name: "Stable — Clear Sky"
+    duration: "25s"
+    profile: "satellite"

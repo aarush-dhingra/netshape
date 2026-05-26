@@ -36,6 +36,9 @@ dev = [
     "pytest>=8",
     "pytest-asyncio>=0.25",
 ]
+scenarios = [
+    "pyyaml>=6",
+]
 
 [project.scripts]
 netshape = "netshape.cli:app"
@@ -44,7 +47,7 @@ netshape = "netshape.cli:app"
 include = ["netshape*"]
 
 [tool.setuptools.package-data]
-netshape = ["data/*.json", "dashboard/*"]
+netshape = ["data/*.json", "data/scenarios/*.yaml", "dashboard/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

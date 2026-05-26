@@ -116,6 +116,29 @@
         <div class="panel-title">Current Config</div>
         <div id="config-display" class="config-display">Loading...</div>
       </div>
+
+      <div class="panel" id="scenario-panel">
+        <div class="panel-title">Scenario</div>
+
+        <div id="scenario-idle-controls">
+          <div class="form-group">
+            <select id="scenario-select">
+              <option value="">— select built-in —</option>
+            </select>
+          </div>
+          <button id="run-scenario-btn" disabled>Run Built-in</button>
+        </div>
+
+        <div id="scenario-running" style="display:none">
+          <div class="scenario-name" id="scenario-name-display"></div>
+          <div class="scenario-phase" id="scenario-phase-display"></div>
+          <progress id="scenario-progress" class="scenario-progress" value="0" max="100"></progress>
+          <div class="scenario-time" id="scenario-time-display"></div>
+          <button id="stop-scenario-btn" class="btn-danger">Stop Scenario</button>
+        </div>
+
+        <div id="scenario-status-msg" class="scenario-msg"></div>
+      </div>
     </div>
   </div>
 

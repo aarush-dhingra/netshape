@@ -24,6 +24,22 @@ _LOG_BUFFER_SIZE = 200
 _LOG_FORMAT = "%(asctime)s %(levelname)-5s %(name)s: %(message)s"
 _LOG_DATE_FORMAT = "%H:%M:%S"
 
+# Prometheus metric descriptors: (name, type, help)
+_PROMETHEUS_METRICS = [
+    ("netshape_bytes_sent_total", "counter", "Total bytes forwarded to upstream"),
+    ("netshape_bytes_received_total", "counter", "Total bytes forwarded to clients"),
+    ("netshape_connections_total", "counter", "Total client connections accepted"),
+    ("netshape_connections_active", "gauge", "Currently active client connections"),
+    ("netshape_requests_handled_total", "counter", "Total requests handled (HTTP + SOCKS5)"),
+    ("netshape_throttle_sleep_seconds_total", "counter", "Total time spent in throttle sleeps (s)"),
+    ("netshape_drops_total", "counter", "Total connections dropped due to loss_pct"),
+    ("netshape_latency_added_seconds_total", "counter", "Total artificial latency injected (s)"),
+    ("netshape_config_bandwidth_bps", "gauge", "Current configured bandwidth limit (0 = unlimited)"),
+    ("netshape_config_latency_ms", "gauge", "Current configured latency (ms)"),
+    ("netshape_config_loss_pct", "gauge", "Current configured packet loss fraction (0.0–1.0)"),
+    ("netshape_rules_count", "gauge", "Number of active per-endpoint throttle rules"),
+]
+
 
 class _ProxyLogHandler(logging.Handler):
     """Logging handler that appends formatted records to a deque."""
@@ -53,6 +69,8 @@ class ThrottleConfig:
     bytes_sent: int = 0
     bytes_received: int = 0
     requests_handled: int = 0
+    connections_total: int = 0
+    drops_total: int = 0
     started_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict[str, Any]:
@@ -61,13 +79,11 @@ class ThrottleConfig:
 
 @dataclass
 class ThrottleRule:
-    """A per-target throttle rule.
+    """Per-target throttle rule.
 
     ``pattern`` is a case-insensitive regex matched against the target string:
-    * For HTTPS CONNECT and SOCKS5 tunnels the target is the **hostname** only
-      (the proxy cannot inspect the encrypted path).
-    * For plain HTTP the target is the **full absolute URL**
-      (e.g. ``http://api.stripe.com/v1/charges``).
+    * HTTPS CONNECT and SOCKS5 — **hostname only** (path is encrypted).
+    * Plain HTTP — **full absolute URL**.
 
     Any field left as ``None`` falls back to the global proxy setting.
     """
@@ -93,6 +109,36 @@ class _ConnRules:
     jitter_ms: int
     loss_pct: float
     rule_id: str | None = None
+
+
+@dataclass
+class _ScenarioState:
+    """Mutable scenario execution state."""
+
+    running: bool = False
+    name: str = ""
+    current_phase: int = 0
+    total_phases: int = 0
+    phase_name: str = ""
+    phase_elapsed_s: float = 0.0
+    phase_duration_s: float = 0.0
+    started_at: float = 0.0
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "running": self.running,
+            "name": self.name,
+            "current_phase": self.current_phase,
+            "total_phases": self.total_phases,
+            "phase_name": self.phase_name,
+            "phase_elapsed_s": round(self.phase_elapsed_s, 2),
+            "phase_duration_s": round(self.phase_duration_s, 2),
+            "started_at": self.started_at,
+        }
+        if self.error:
+            d["error"] = self.error
+        return d
 
 
 class ThrottledProxy:
@@ -122,7 +168,7 @@ class ThrottledProxy:
         self._last_bytes_sent: int = 0
         self._last_bytes_received: int = 0
         self._last_metrics_time: float = time.monotonic()
-        # Live log buffer — captures all netshape.* log records
+        # Live log buffer
         self._log_buffer: collections.deque[str] = collections.deque(maxlen=_LOG_BUFFER_SIZE)
         self._log_handler = _ProxyLogHandler(self._log_buffer)
         self._log_handler.setFormatter(
@@ -133,6 +179,14 @@ class ThrottledProxy:
         self._rules: list[ThrottleRule] = []
         self._rule_buckets: dict[str, TokenBucket] = {}
         self._rule_patterns: dict[str, re.Pattern[str]] = {}
+        # Phase 5 metrics counters
+        self._connections_active: int = 0
+        self._throttle_sleep_seconds: float = 0.0
+        self._latency_added_seconds: float = 0.0
+        # Phase 4 scenario runner
+        self._scenario_task: asyncio.Task[None] | None = None
+        self._scenario_stop: asyncio.Event = asyncio.Event()
+        self._scenario_state: _ScenarioState = _ScenarioState()
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -163,6 +217,8 @@ class ThrottledProxy:
 
     async def close(self) -> None:
         logging.getLogger("netshape").removeHandler(self._log_handler)
+        if self._scenario_task and not self._scenario_task.done():
+            self._scenario_task.cancel()
         for server in (self._traffic_server, self._control_server):
             if server is not None:
                 server.close()
@@ -195,17 +251,14 @@ class ThrottledProxy:
     # ── Rule management ──────────────────────────────────────────────────────
 
     def add_rule(self, rule_data: dict[str, Any]) -> ThrottleRule:
-        """Create and register a new throttle rule; returns the rule."""
         rule_id = str(uuid.uuid4())
         pattern = rule_data.get("pattern")
         if not pattern:
             raise ValueError("rule must have a non-empty pattern")
-        # Validate the pattern compiles
         try:
             compiled = re.compile(pattern, re.IGNORECASE)
         except re.error as exc:
             raise ValueError(f"invalid regex pattern: {exc}") from exc
-
         rule = ThrottleRule(
             id=rule_id,
             pattern=pattern,
@@ -219,17 +272,11 @@ class ThrottledProxy:
         self._rule_patterns[rule_id] = compiled
         logger.info(
             "Rule added: id=%s pattern=%r bw=%s lat=%s loss=%s comment=%r",
-            rule_id[:8],
-            pattern,
-            rule.bandwidth_bps,
-            rule.latency_ms,
-            rule.loss_pct,
-            rule.comment,
+            rule_id[:8], pattern, rule.bandwidth_bps, rule.latency_ms, rule.loss_pct, rule.comment,
         )
         return rule
 
     def remove_rule(self, rule_id: str) -> bool:
-        """Remove a rule by id; returns True if found and removed."""
         before = len(self._rules)
         self._rules = [r for r in self._rules if r.id != rule_id]
         self._rule_buckets.pop(rule_id, None)
@@ -243,7 +290,6 @@ class ThrottledProxy:
         return list(self._rules)
 
     def _resolve_rules(self, target: str) -> _ConnRules:
-        """Return the first matching rule's resolved settings, or global defaults."""
         for rule in self._rules:
             pattern = self._rule_patterns.get(rule.id)
             if pattern is None:
@@ -256,10 +302,7 @@ class ThrottledProxy:
                 bps = rule.bandwidth_bps if rule.bandwidth_bps is not None else self.config.bandwidth_bps
                 if rule.id not in self._rule_buckets:
                     self._rule_buckets[rule.id] = TokenBucket(bps)
-                logger.debug(
-                    "Rule match: target=%r rule=%s (%s)",
-                    target, rule.id[:8], rule.pattern,
-                )
+                logger.debug("Rule match: target=%r rule=%s (%s)", target, rule.id[:8], rule.pattern)
                 return _ConnRules(
                     bucket=self._rule_buckets[rule.id],
                     latency_ms=rule.latency_ms if rule.latency_ms is not None else self.config.latency_ms,
@@ -274,7 +317,99 @@ class ThrottledProxy:
             loss_pct=self.config.loss_pct,
         )
 
-    # ── Traffic handlers ─────────────────────────────────────────────────────
+    # ── Scenario management ───────────────────────────────────────────────────
+
+    async def start_scenario(self, scenario_dict: dict[str, Any]) -> _ScenarioState:
+        """Start a scenario; stops any currently running one first."""
+        await self.stop_scenario()
+        self._scenario_stop.clear()
+        self._scenario_task = asyncio.create_task(
+            self._run_scenario_task(scenario_dict),
+            name="netshape-scenario",
+        )
+        await asyncio.sleep(0)  # give task one tick to initialise
+        return self._scenario_state
+
+    async def stop_scenario(self) -> _ScenarioState:
+        """Signal the running scenario to stop and wait up to 3 s for it."""
+        if self._scenario_task and not self._scenario_task.done():
+            self._scenario_stop.set()
+            try:
+                await asyncio.wait_for(asyncio.shield(self._scenario_task), timeout=3.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                self._scenario_task.cancel()
+        self._scenario_state.running = False
+        return self._scenario_state
+
+    async def _run_scenario_task(self, scenario_dict: dict[str, Any]) -> None:
+        from .scenario import ScenarioError, parse_scenario_dict
+
+        try:
+            scenario = parse_scenario_dict(scenario_dict)
+        except Exception as exc:
+            logger.error("Scenario parse error: %s", exc)
+            self._scenario_state.error = str(exc)
+            return
+
+        pre_config = {
+            "bandwidth_bps": self.config.bandwidth_bps,
+            "latency_ms": self.config.latency_ms,
+            "loss_pct": self.config.loss_pct,
+            "jitter_ms": self.config.jitter_ms,
+            "profile": self.config.profile,
+        }
+        logger.info("Scenario start: %r (%d phases, %.0fs total)",
+                    scenario.name, len(scenario.phases), scenario.total_duration_ms() / 1000)
+
+        self._scenario_state.running = True
+        self._scenario_state.name = scenario.name
+        self._scenario_state.total_phases = len(scenario.phases)
+        self._scenario_state.current_phase = 0
+        self._scenario_state.error = None
+        self._scenario_state.started_at = time.time()
+
+        try:
+            for i, phase in enumerate(scenario.phases):
+                if self._scenario_stop.is_set():
+                    logger.info("Scenario stopped at phase %d/%d", i + 1, len(scenario.phases))
+                    break
+
+                self._scenario_state.current_phase = i + 1
+                self._scenario_state.phase_name = phase.name
+                self._scenario_state.phase_duration_s = phase.duration_ms / 1000.0
+                self._scenario_state.phase_elapsed_s = 0.0
+
+                await self.configure(phase.to_config())
+                logger.info(
+                    "Phase %d/%d: %r — bw=%d lat=%d loss=%.3f jitter=%d (%.1fs)",
+                    i + 1, len(scenario.phases), phase.name,
+                    phase.bandwidth_bps, phase.latency_ms, phase.loss_pct, phase.jitter_ms,
+                    phase.duration_ms / 1000.0,
+                )
+
+                phase_start = time.monotonic()
+                duration_s = phase.duration_ms / 1000.0
+                while not self._scenario_stop.is_set():
+                    elapsed = time.monotonic() - phase_start
+                    self._scenario_state.phase_elapsed_s = elapsed
+                    remaining = duration_s - elapsed
+                    if remaining <= 0:
+                        break
+                    await asyncio.sleep(min(0.25, remaining))
+            else:
+                logger.info("Scenario completed: %r", scenario.name)
+        finally:
+            logger.info(
+                "Scenario: restoring pre-scenario config — bw=%d lat=%d",
+                pre_config["bandwidth_bps"], pre_config["latency_ms"],
+            )
+            try:
+                await self.configure(pre_config)
+            except Exception as exc:
+                logger.warning("Failed to restore pre-scenario config: %s", exc)
+            self._scenario_state.running = False
+
+    # ── Traffic handlers ──────────────────────────────────────────────────────
 
     async def _handle_client(
         self,
@@ -282,6 +417,8 @@ class ThrottledProxy:
         writer: asyncio.StreamWriter,
     ) -> None:
         self._active_writers.add(writer)
+        self.config.connections_total += 1
+        self._connections_active += 1
         protocol = "http"
         reply_sent = False
         try:
@@ -309,6 +446,7 @@ class ThrottledProxy:
             else:
                 await self._send_error(writer, 502)
         finally:
+            self._connections_active -= 1
             writer.close()
             try:
                 await writer.wait_closed()
@@ -325,6 +463,7 @@ class ThrottledProxy:
         host, port = self._split_host_port(target, default_port=443)
         rules = self._resolve_rules(host)
         if should_drop_chunk(rules.loss_pct):
+            self.config.drops_total += 1
             logger.debug("CONNECT %s dropped (loss_pct=%.2f)", host, rules.loss_pct)
             return
         upstream_reader, upstream_writer = await asyncio.open_connection(host, port)
@@ -367,6 +506,7 @@ class ThrottledProxy:
 
         rules = self._resolve_rules(host)
         if should_drop_chunk(rules.loss_pct):
+            self.config.drops_total += 1
             logger.debug("SOCKS5 %s dropped (loss_pct=%.2f)", host, rules.loss_pct)
             await self._send_socks5_reply(client_writer, 0x04, address_type=address_type)
             return
@@ -397,16 +537,12 @@ class ThrottledProxy:
     ) -> None:
         connection_start = time.time()
         client_to_upstream = asyncio.create_task(
-            self._pipe(
-                client_reader, upstream_writer,
-                direction="sent", connection_start=connection_start, rules=rules,
-            )
+            self._pipe(client_reader, upstream_writer,
+                       direction="sent", connection_start=connection_start, rules=rules)
         )
         upstream_to_client = asyncio.create_task(
-            self._pipe(
-                upstream_reader, client_writer,
-                direction="received", connection_start=connection_start, rules=rules,
-            )
+            self._pipe(upstream_reader, client_writer,
+                       direction="received", connection_start=connection_start, rules=rules)
         )
         try:
             done, pending = await asyncio.wait(
@@ -447,10 +583,10 @@ class ThrottledProxy:
             if parsed.query:
                 path = f"{path}?{parsed.query}"
 
-        # Match against the full URL for HTTP (path is visible); fall back to host.
         match_target = target if parsed.scheme else f"http://{host}{path}"
         rules = self._resolve_rules(match_target)
         if should_drop_chunk(rules.loss_pct):
+            self.config.drops_total += 1
             logger.debug("HTTP %s %s dropped (loss_pct=%.2f)", method, match_target, rules.loss_pct)
             return
 
@@ -475,10 +611,8 @@ class ThrottledProxy:
 
         try:
             connection_start = time.time()
-            await self._pipe(
-                upstream_reader, client_writer,
-                direction="received", connection_start=connection_start, rules=rules,
-            )
+            await self._pipe(upstream_reader, client_writer,
+                             direction="received", connection_start=connection_start, rules=rules)
         finally:
             upstream_writer.close()
             try:
@@ -517,6 +651,7 @@ class ThrottledProxy:
         bucket = rules.bucket if rules is not None else self.bucket
         wait = bucket.consume(len(chunk))
         if wait:
+            self._throttle_sleep_seconds += wait
             await asyncio.sleep(wait)
 
         writer.write(chunk)
@@ -536,15 +671,19 @@ class ThrottledProxy:
         jit = rules.jitter_ms if rules is not None else self.config.jitter_ms
         delay = calculate_delay_seconds(lat, jit)
         if delay:
+            actual_sleep = 0.0
             if connection_start is not None:
                 elapsed = time.time() - connection_start
                 remaining = delay - elapsed
                 if remaining > 0:
+                    actual_sleep = remaining
                     await asyncio.sleep(remaining)
             else:
+                actual_sleep = delay
                 await asyncio.sleep(delay)
+            self._latency_added_seconds += actual_sleep
 
-    # ── Control API ──────────────────────────────────────────────────────────
+    # ── Control API ───────────────────────────────────────────────────────────
 
     async def _handle_control(
         self,
@@ -569,7 +708,7 @@ class ThrottledProxy:
             elif method == "POST" and path == "/shutdown":
                 await self._send_json(writer, {"ok": True})
                 self._shutdown_event.set()
-            # ── Rules API ──────────────────────────────────────────────────
+            # ── Rules ─────────────────────────────────────────────────────
             elif method == "GET" and path == "/rules":
                 await self._send_json(writer, {"rules": [r.to_dict() for r in self._rules]})
             elif method == "POST" and path == "/rules":
@@ -582,6 +721,26 @@ class ThrottledProxy:
                     await self._send_json(writer, {"ok": True})
                 else:
                     await self._send_json(writer, {"error": "rule not found"}, status=404)
+            # ── Scenarios ──────────────────────────────────────────────────
+            elif method == "GET" and path == "/scenarios":
+                from .scenario import list_builtin_scenarios
+                await self._send_json(writer, {"scenarios": list_builtin_scenarios()})
+            elif method == "POST" and path == "/scenario/start":
+                data = json.loads(body.decode("utf-8") or "{}")
+                if "builtin" in data:
+                    from .scenario import load_builtin_scenario
+                    scenario = load_builtin_scenario(str(data["builtin"]))
+                    data = scenario.to_dict()
+                state = await self.start_scenario(data)
+                await self._send_json(writer, state.to_dict())
+            elif method == "POST" and path == "/scenario/stop":
+                state = await self.stop_scenario()
+                await self._send_json(writer, state.to_dict())
+            elif method == "GET" and path == "/scenario/status":
+                await self._send_json(writer, self._scenario_state.to_dict())
+            # ── Metrics ────────────────────────────────────────────────────
+            elif method == "GET" and path.startswith("/metrics"):
+                await self._serve_metrics(writer, path)
             # ── Dashboard / SSE / Logs ─────────────────────────────────────
             elif method == "GET" and path == "/events":
                 await self._serve_sse(writer)
@@ -613,14 +772,59 @@ class ThrottledProxy:
                 "bandwidth_model": "shared_bidirectional",
                 "protocols": ["http", "https-connect", "socks5-connect"],
                 "rules_count": len(self._rules),
+                "connections_active": self._connections_active,
+                "scenario_running": self._scenario_state.running,
             }
         )
         return payload
 
+    # ── Metrics ───────────────────────────────────────────────────────────────
+
+    def _metrics_dict(self) -> dict[str, Any]:
+        return {
+            "netshape_bytes_sent_total": self.config.bytes_sent,
+            "netshape_bytes_received_total": self.config.bytes_received,
+            "netshape_connections_total": self.config.connections_total,
+            "netshape_connections_active": self._connections_active,
+            "netshape_requests_handled_total": self.config.requests_handled,
+            "netshape_throttle_sleep_seconds_total": round(self._throttle_sleep_seconds, 6),
+            "netshape_drops_total": self.config.drops_total,
+            "netshape_latency_added_seconds_total": round(self._latency_added_seconds, 6),
+            "netshape_config_bandwidth_bps": self.config.bandwidth_bps,
+            "netshape_config_latency_ms": self.config.latency_ms,
+            "netshape_config_loss_pct": self.config.loss_pct,
+            "netshape_rules_count": len(self._rules),
+        }
+
+    def _build_prometheus_text(self) -> str:
+        metrics = self._metrics_dict()
+        lines: list[str] = []
+        for name, kind, help_text in _PROMETHEUS_METRICS:
+            lines.append(f"# HELP {name} {help_text}")
+            lines.append(f"# TYPE {name} {kind}")
+            lines.append(f"{name} {metrics[name]}")
+        return "\n".join(lines) + "\n"
+
+    async def _serve_metrics(self, writer: asyncio.StreamWriter, path: str) -> None:
+        if "format=json" in path:
+            await self._send_json(writer, self._metrics_dict())
+            return
+        body = self._build_prometheus_text().encode("utf-8")
+        writer.write(
+            (
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: text/plain; version=0.0.4; charset=utf-8\r\n"
+                f"Content-Length: {len(body)}\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+            ).encode("ascii")
+            + body
+        )
+        await writer.drain()
+
     # ── Dashboard / SSE / Logs ────────────────────────────────────────────────
 
     async def _serve_sse(self, writer: asyncio.StreamWriter) -> None:
-        """Serve Server-Sent Events stream for the dashboard."""
         peer = writer.get_extra_info("peername", "<unknown>")
         logger.info("SSE client connected from %s", peer)
         try:
@@ -645,11 +849,9 @@ class ThrottledProxy:
             logger.info("SSE client disconnected from %s", peer)
 
     async def _serve_logs(self, writer: asyncio.StreamWriter) -> None:
-        """Return the recent proxy log buffer as JSON."""
         await self._send_json(writer, {"lines": list(self._log_buffer)})
 
     def _build_sse_data(self) -> dict[str, Any]:
-        """Build the data payload for SSE events (instantaneous per-tick rates)."""
         now = time.monotonic()
         elapsed = max(0.001, now - self._last_metrics_time)
 
@@ -685,10 +887,10 @@ class ThrottledProxy:
             "traffic_port": self.traffic_port,
             "requests_handled": self.config.requests_handled,
             "rules_count": len(self._rules),
+            "scenario": self._scenario_state.to_dict(),
         }
 
     async def _serve_dashboard(self, writer: asyncio.StreamWriter, path: str) -> None:
-        """Serve static dashboard files from the netshape.dashboard package."""
         logger.debug("Dashboard request: %s", path)
         file_map = {
             "/dashboard": "index.html",
@@ -868,7 +1070,6 @@ class ThrottledProxy:
             host, _, rest = target[1:].partition("]")
             port = int(rest.removeprefix(":") or default_port)
             return host, port
-
         host, sep, port_text = target.partition(":")
         return host, int(port_text) if sep else default_port
 
@@ -889,7 +1090,7 @@ class ThrottledProxy:
         return int(sockets[0].getsockname()[1])
 
 
-# ── Module-level helpers ─────────────────────────────────────────────────────
+# ── Module-level helpers ──────────────────────────────────────────────────────
 
 def _opt_int(value: Any) -> int | None:
     return None if value is None else int(value)
