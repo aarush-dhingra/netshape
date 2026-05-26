@@ -44,7 +44,7 @@ netshape = "netshape.cli:app"
 include = ["netshape*"]
 
 [tool.setuptools.package-data]
-netshape = ["data/*.json"]
+netshape = ["data/*.json", "dashboard/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

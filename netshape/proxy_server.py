@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import collections
+import importlib.resources
 import json
+import logging
 import socket
 import struct
 import time
@@ -12,6 +15,26 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .throttle import TokenBucket, calculate_delay_seconds, should_drop_chunk
+
+logger = logging.getLogger("netshape.proxy")
+
+_LOG_BUFFER_SIZE = 200
+_LOG_FORMAT = "%(asctime)s %(levelname)-5s %(name)s: %(message)s"
+_LOG_DATE_FORMAT = "%H:%M:%S"
+
+
+class _ProxyLogHandler(logging.Handler):
+    """Logging handler that appends formatted records to a deque."""
+
+    def __init__(self, buffer: collections.deque) -> None:
+        super().__init__()
+        self._buffer = buffer
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self._buffer.append(self.format(record))
+        except Exception:
+            self.handleError(record)
 
 READ_CHUNK_SIZE = 8192
 HEADER_LIMIT = 64 * 1024
@@ -54,6 +77,19 @@ class ThrottledProxy:
         self._shutdown_event = asyncio.Event()
         self._config_lock = asyncio.Lock()
         self._active_writers: set[asyncio.StreamWriter] = set()
+        self._sse_writers: set[asyncio.StreamWriter] = set()
+        self._last_status_push: dict[str, Any] = {}
+        # Instantaneous throughput tracking (reset each SSE tick)
+        self._last_bytes_sent: int = 0
+        self._last_bytes_received: int = 0
+        self._last_metrics_time: float = time.monotonic()
+        # Live log buffer — captures all netshape.* log records
+        self._log_buffer: collections.deque[str] = collections.deque(maxlen=_LOG_BUFFER_SIZE)
+        self._log_handler = _ProxyLogHandler(self._log_buffer)
+        self._log_handler.setFormatter(
+            logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATE_FORMAT)
+        )
+        logging.getLogger("netshape").addHandler(self._log_handler)
 
     async def start(self) -> None:
         self.config.started_at = time.time()
@@ -81,6 +117,7 @@ class ThrottledProxy:
         await self.close()
 
     async def close(self) -> None:
+        logging.getLogger("netshape").removeHandler(self._log_handler)
         for server in (self._traffic_server, self._control_server):
             if server is not None:
                 server.close()
@@ -359,6 +396,15 @@ class ThrottledProxy:
             elif method == "POST" and path == "/shutdown":
                 await self._send_json(writer, {"ok": True})
                 self._shutdown_event.set()
+            elif method == "GET" and path == "/events":
+                await self._serve_sse(writer)
+                return
+            elif method == "GET" and path == "/logs":
+                await self._serve_logs(writer)
+            elif method == "GET" and path.startswith("/dashboard"):
+                await self._serve_dashboard(writer, path)
+            elif method == "GET" and path == "/":
+                await self._serve_dashboard(writer, "/dashboard/index.html")
             else:
                 await self._send_json(writer, {"error": "not found"}, status=404)
         except Exception as exc:
@@ -413,6 +459,117 @@ class ThrottledProxy:
         if not version.startswith("HTTP/"):
             raise ValueError("malformed HTTP version")
         return method, target, version
+
+    async def _serve_sse(self, writer: asyncio.StreamWriter) -> None:
+        """Serve Server-Sent Events stream for the dashboard."""
+        peer = writer.get_extra_info("peername", "<unknown>")
+        logger.info("SSE client connected from %s", peer)
+        try:
+            writer.write(
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: text/event-stream\r\n"
+                "Cache-Control: no-cache\r\n"
+                "Connection: keep-alive\r\n"
+                "\r\n".encode("ascii")
+            )
+            await writer.drain()
+            self._sse_writers.add(writer)
+            while True:
+                await asyncio.sleep(1.0)
+                data = self._build_sse_data()
+                writer.write(f"data: {json.dumps(data)}\n\n".encode("utf-8"))
+                await writer.drain()
+        except (ConnectionResetError, OSError, BrokenPipeError):
+            pass
+        finally:
+            self._sse_writers.discard(writer)
+            logger.info("SSE client disconnected from %s", peer)
+
+    async def _serve_logs(self, writer: asyncio.StreamWriter) -> None:
+        """Return the recent proxy log buffer as JSON."""
+        await self._send_json(writer, {"lines": list(self._log_buffer)})
+
+    def _build_sse_data(self) -> dict[str, Any]:
+        """Build the data payload for SSE events.
+
+        Throughput is measured as a per-tick delta (bytes since the last call)
+        so the chart reflects the current rate rather than the session average.
+        """
+        now = time.monotonic()
+        elapsed = max(0.001, now - self._last_metrics_time)
+
+        bytes_sent_delta = self.config.bytes_sent - self._last_bytes_sent
+        bytes_recv_delta = self.config.bytes_received - self._last_bytes_received
+        sent_mbps = (bytes_sent_delta * 8) / elapsed / 1_000_000
+        recv_mbps = (bytes_recv_delta * 8) / elapsed / 1_000_000
+
+        self._last_bytes_sent = self.config.bytes_sent
+        self._last_bytes_received = self.config.bytes_received
+        self._last_metrics_time = now
+
+        bw = self.config.bandwidth_bps
+        loss = self.config.loss_pct
+        latency = self.config.latency_ms
+
+        if loss > 0.05 or latency > 500:
+            classification = "SEVERE"
+        elif loss > 0.01 or (0 < bw < 300_000) or latency > 200:
+            classification = "POOR"
+        elif (0 < bw < 2_000_000) or latency > 50:
+            classification = "SLOW"
+        else:
+            classification = "NORMAL"
+
+        return {
+            "download_mbps": round(recv_mbps, 3),
+            "upload_mbps": round(sent_mbps, 3),
+            "latency_ms": latency,
+            "loss_pct": loss,
+            "classification": classification,
+            "connected": True,
+            "traffic_port": self.traffic_port,
+            "requests_handled": self.config.requests_handled,
+        }
+
+    async def _serve_dashboard(self, writer: asyncio.StreamWriter, path: str) -> None:
+        """Serve static dashboard files from the netshape.dashboard package."""
+        logger.debug("Dashboard request: %s", path)
+        file_map = {
+            "/dashboard": "index.html",
+            "/dashboard/": "index.html",
+            "/dashboard/index.html": "index.html",
+            "/dashboard/style.css": "style.css",
+            "/dashboard/app.js": "app.js",
+        }
+        filename = file_map.get(path)
+        if not filename:
+            await self._send_json(writer, {"error": "not found"}, status=404)
+            return
+
+        try:
+            content = importlib.resources.files("netshape.dashboard").joinpath(filename).read_text("utf-8")
+        except FileNotFoundError:
+            await self._send_json(writer, {"error": "not found"}, status=404)
+            return
+
+        content_type = {
+            "index.html": "text/html",
+            "style.css": "text/css",
+            "app.js": "application/javascript",
+        }.get(filename, "text/plain")
+
+        body = content.encode("utf-8")
+        writer.write(
+            (
+                f"HTTP/1.1 200 OK\r\n"
+                f"Content-Type: {content_type}\r\n"
+                f"Content-Length: {len(body)}\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+            ).encode("ascii")
+            + body
+        )
+        await writer.drain()
 
     async def _read_socks5_host(self, reader: asyncio.StreamReader, address_type: int) -> str:
         if address_type == 0x01:
