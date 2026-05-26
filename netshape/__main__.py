@@ -6,7 +6,12 @@ from .cli import app
 
 
 def main(argv: list[str] | None = None) -> int:
-    app(args=argv, prog_name="netshape")
+    try:
+        app(args=argv, prog_name="netshape")
+    except SystemExit as exc:
+        if isinstance(exc.code, int):
+            return exc.code
+        return 1
     return 0
 
 

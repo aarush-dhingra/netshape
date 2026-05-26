@@ -67,6 +67,7 @@ def test_duration_parsers_reject_invalid_values(parser, raw: str) -> None:
         (None, 0.0),
         (0, 0.0),
         (0.25, 0.25),
+        (1, 0.01),
         (5, 0.05),
         ("1%", 0.01),
         ("2.5 percent", 0.025),

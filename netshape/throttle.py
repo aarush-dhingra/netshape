@@ -6,6 +6,41 @@ import random
 import time
 from collections.abc import Callable
 
+# Burst window constants.
+#
+# The burst capacity scales proportionally with the rate (10 % of rate_bps) so that
+# any configured rate gets roughly a 100 ms burst window before the token bucket
+# starts throttling.
+#
+# Floor (_MIN_BURST_BITS = one read-chunk = 65 536 bits):
+#   Mandatory for correctness.  The bucket capacity must be at least as large as one
+#   READ_CHUNK_SIZE chunk; otherwise the bucket can never accumulate enough tokens to
+#   cover a full chunk, and the effective throughput diverges from the configured rate.
+#
+# Cap (_MAX_BURST_BITS = two read-chunks = 131 072 bits):
+#   Keeps high-speed connections tightly throttled (22 ms burst at 6 Mbps, 1.3 ms
+#   at 100 Mbps) without allowing the bucket to become a free-pass for large transfers.
+#
+# Crossover points:
+#   rate × 0.1 < 65 536  (i.e. rate < ~655 Kbps) → floor wins → 1-chunk burst
+#   rate × 0.1 > 131 072 (i.e. rate > ~1.3 Mbps)  → cap wins  → 2-chunk burst
+#   between:                                          proportional (65 536–131 072 bits)
+_BURST_RATIO: float = 0.1              # 100 ms proportional window
+_MIN_BURST_BITS: int = 8192 * 8        # 65 536 bits — one read-chunk (mandatory floor)
+_MAX_BURST_BITS: int = 2 * 8192 * 8    # 131 072 bits — two read-chunks (cap)
+
+
+def _default_capacity(rate_bps: int) -> int:
+    """Return the default burst capacity for a given rate.
+
+    Scales as 10 % of ``rate_bps``, clamped to [``_MIN_BURST_BITS``,
+    ``_MAX_BURST_BITS``].
+    """
+    if rate_bps == 0:
+        return 0
+    proportional = int(rate_bps * _BURST_RATIO)
+    return max(_MIN_BURST_BITS, min(proportional, _MAX_BURST_BITS))
+
 
 class TokenBucket:
     """Token bucket measured in bits.
@@ -26,7 +61,9 @@ class TokenBucket:
             raise ValueError("capacity_bits must be non-negative")
 
         self.rate_bps = int(rate_bps)
-        self.capacity_bits = int(capacity_bits if capacity_bits is not None else rate_bps)
+        self.capacity_bits = int(
+            capacity_bits if capacity_bits is not None else _default_capacity(rate_bps)
+        )
         self._clock = clock
         self._tokens = float("inf") if self.rate_bps == 0 else float(self.capacity_bits)
         self._last_refill = self._clock()
@@ -61,7 +98,7 @@ class TokenBucket:
             raise ValueError("rate_bps must be non-negative")
         self._refill()
         self.rate_bps = int(rate_bps)
-        self.capacity_bits = int(rate_bps)
+        self.capacity_bits = int(_default_capacity(rate_bps))
         self._tokens = float("inf") if rate_bps == 0 else min(self._tokens, self.capacity_bits)
         self._last_refill = self._clock()
 
@@ -101,7 +138,15 @@ def should_drop_chunk(
     *,
     random_value: Callable[[], float] = random.random,
 ) -> bool:
-    """Return whether a chunk should be dropped for the configured loss rate."""
+    """Return whether an incoming connection should be dropped for the configured loss rate.
+
+    Loss is simulated at the **connection level**: each new connection is randomly
+    rejected before any data is exchanged.  This avoids corrupting TLS streams,
+    which would happen if individual encrypted chunks were silently discarded
+    mid-stream (the remote TLS peer would receive a broken record and abort with
+    a decryption error).  Connection-level drop is statistically equivalent to
+    packet loss for the application layer — the connection simply never succeeds.
+    """
 
     if loss_pct < 0 or loss_pct > 1:
         raise ValueError("loss_pct must be between 0.0 and 1.0")

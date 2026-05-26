@@ -1,0 +1,14 @@
+{
+  "name": "netshape-test-app",
+  "version": "1.0.0",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "netshape:3g": "netshape run --profile 3g -- npx electron .",
+    "netshape:satellite": "netshape run --profile satellite -- npx electron .",
+    "netshape:edge": "netshape run --profile edge -- npx electron ."
+  },
+  "devDependencies": {
+    "electron": "latest"
+  }
+}

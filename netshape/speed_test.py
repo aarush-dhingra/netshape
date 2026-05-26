@@ -102,7 +102,8 @@ def _download_via_socks5(url: str, proxy: tuple[str, int]) -> bytes:
     with socket.create_connection(proxy, timeout=10) as sock:
         sock.settimeout(10)
         sock.sendall(b"\x05\x01\x00")
-        if sock.recv(2) != b"\x05\x00":
+        reply = _recv_exact(sock, 2)
+        if reply != b"\x05\x00":
             raise OSError("SOCKS5 proxy did not accept no-auth method")
 
         encoded_host = host.encode("idna")

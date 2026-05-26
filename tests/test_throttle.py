@@ -4,7 +4,14 @@ import math
 
 import pytest
 
-from netshape.throttle import TokenBucket, calculate_delay_seconds, should_drop_chunk
+from netshape.throttle import (
+    TokenBucket,
+    _MAX_BURST_BITS,
+    _MIN_BURST_BITS,
+    _default_capacity,
+    calculate_delay_seconds,
+    should_drop_chunk,
+)
 
 
 class ManualClock:
@@ -27,7 +34,8 @@ def test_unlimited_token_bucket_never_waits() -> None:
 
 def test_token_bucket_consumes_available_capacity() -> None:
     clock = ManualClock()
-    bucket = TokenBucket(8_000, clock=clock)
+    # Explicit capacity so the test is independent of _default_capacity.
+    bucket = TokenBucket(8_000, capacity_bits=8_000, clock=clock)
 
     assert bucket.consume(500) == 0.0
     assert bucket.tokens == 4_000
@@ -35,7 +43,7 @@ def test_token_bucket_consumes_available_capacity() -> None:
 
 def test_token_bucket_returns_wait_for_shortage() -> None:
     clock = ManualClock()
-    bucket = TokenBucket(8_000, clock=clock)
+    bucket = TokenBucket(8_000, capacity_bits=8_000, clock=clock)
 
     assert bucket.consume(2_000) == pytest.approx(1.0)
     assert bucket.tokens == 0
@@ -47,7 +55,7 @@ def test_token_bucket_returns_wait_for_shortage() -> None:
 
 def test_token_bucket_refills_up_to_capacity() -> None:
     clock = ManualClock()
-    bucket = TokenBucket(8_000, clock=clock)
+    bucket = TokenBucket(8_000, capacity_bits=8_000, clock=clock)
 
     bucket.consume(1_000)
     clock.advance(10)
@@ -57,14 +65,31 @@ def test_token_bucket_refills_up_to_capacity() -> None:
 
 def test_token_bucket_can_reset_rate() -> None:
     clock = ManualClock()
-    bucket = TokenBucket(8_000, clock=clock)
+    # Start with explicit capacity so the bucket is fully drained by consume.
+    bucket = TokenBucket(8_000, capacity_bits=8_000, clock=clock)
 
-    bucket.consume(1_000)
+    bucket.consume(1_000)  # drains all 8 000 bits; tokens = 0
     bucket.reset_rate(16_000)
 
     assert bucket.rate_bps == 16_000
-    assert bucket.capacity_bits == 16_000
+    assert bucket.capacity_bits == _default_capacity(16_000)
+    # tokens = 0 after reset (min(0, new_capacity)); shortage = 16 000 bits at 16 000 bps → 1 s
     assert bucket.consume(2_000) == pytest.approx(1.0)
+
+
+def test_default_capacity_proportional() -> None:
+    """_default_capacity scales with rate and stays within [MIN, MAX]."""
+    # Below crossover (~655 Kbps): floor kicks in
+    assert _default_capacity(0) == 0
+    assert _default_capacity(100_000) == _MIN_BURST_BITS
+    assert _default_capacity(250_000) == _MIN_BURST_BITS
+    # Above crossover but below cap: proportional
+    one_mbps_cap = _default_capacity(1_000_000)
+    assert _MIN_BURST_BITS < one_mbps_cap < _MAX_BURST_BITS
+    assert one_mbps_cap == int(1_000_000 * 0.1)
+    # Above cap (~1.3 Mbps+): cap kicks in
+    assert _default_capacity(6_000_000) == _MAX_BURST_BITS
+    assert _default_capacity(100_000_000) == _MAX_BURST_BITS
 
 
 def test_calculate_delay_without_jitter() -> None:

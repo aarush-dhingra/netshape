@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -30,7 +31,7 @@ def test_state_round_trip(tmp_path: Path) -> None:
         active=True,
         traffic_port=8090,
         control_port=8091,
-        pid=123,
+        pid=os.getpid(),
         started_at=1.5,
         profile="3g",
         bandwidth_bps=100_000,
@@ -72,7 +73,7 @@ def test_run_session_sets_proxy_environment_and_cleans_state(tmp_path: Path) -> 
     assert env["ALL_PROXY"].startswith("socks5://127.0.0.1:")
     assert env["HTTP_PROXY"].startswith("http://127.0.0.1:")
     assert env["HTTPS_PROXY"] == env["HTTP_PROXY"]
-    assert env["NO_PROXY"] == "localhost,127.0.0.1"
+    assert env["NO_PROXY"] == "localhost,127.0.0.1,::1"
     assert read_state(state_path) is None
 
 
@@ -91,7 +92,7 @@ async def _test_status_adjust_and_stop_session(tmp_path: Path) -> None:
                 active=True,
                 traffic_port=proxy.traffic_port,
                 control_port=proxy.control_port,
-                pid=123,
+                pid=os.getpid(),
                 started_at=time.time(),
             ),
             state_path,
@@ -123,7 +124,7 @@ def test_status_warns_when_no_traffic_detected(tmp_path: Path) -> None:
                 active=True,
                 traffic_port=proxy.traffic_port,
                 control_port=proxy.control_port,
-                pid=123,
+                pid=os.getpid(),
                 started_at=time.time() - 11,
             ),
             state_path,
@@ -152,6 +153,28 @@ def test_run_session_timeout_terminates_child(tmp_path: Path) -> None:
     assert read_state(state_path) is None
 
 
+def test_read_state_cleans_stale_pid(tmp_path: Path) -> None:
+    state_path = tmp_path / "stale.json"
+    state = SessionState(
+        active=True,
+        traffic_port=8090,
+        control_port=8091,
+        pid=99999999,  # bogus pid that does not exist
+        started_at=1.0,
+    )
+    write_state(state, state_path)
+    assert state_path.exists()
+
+    result = read_state(state_path)
+    assert result is None
+    assert not state_path.exists()
+
+
+def test_find_free_port_zero_returns_actual() -> None:
+    port = _find_free_port(0, attempts=1)
+    assert port > 0
+
+
 def test_find_free_port_reports_clear_range_when_exhausted(monkeypatch) -> None:
     class BusySocket:
         def __enter__(self):
@@ -167,3 +190,9 @@ def test_find_free_port_reports_clear_range_when_exhausted(monkeypatch) -> None:
 
     with pytest.raises(SessionError, match="range 8090-8092"):
         _find_free_port(8090, attempts=3)
+
+
+def test_main_propagates_exit_code() -> None:
+    from netshape.__main__ import main
+
+    assert main(["--version"]) == 0

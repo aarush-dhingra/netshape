@@ -115,11 +115,17 @@ class ThrottledProxy:
     ) -> None:
         self._active_writers.add(writer)
         protocol = "http"
+        reply_sent = False
         try:
+            if should_drop_chunk(self.config.loss_pct):
+                return
             first_byte = await reader.readexactly(1)
             if first_byte == b"\x05":
                 protocol = "socks5"
-                await self._handle_socks5(reader, writer)
+                try:
+                    await self._handle_socks5(reader, writer)
+                except Exception:
+                    pass
                 return
 
             header_bytes, _ = await self._read_headers(reader, prefix=first_byte)
@@ -131,14 +137,17 @@ class ThrottledProxy:
                 await self._handle_connect(reader, writer, target)
             else:
                 await self._handle_http(reader, writer, method, target, version, headers)
-        except Exception as exc:
-            if protocol == "socks5":
+        except Exception:
+            if protocol == "socks5" and not reply_sent:
                 await self._send_socks5_reply(writer, 0x01)
             else:
-                await self._send_error(writer, 502, str(exc))
+                await self._send_error(writer, 502)
         finally:
             writer.close()
-            await writer.wait_closed()
+            try:
+                await writer.wait_closed()
+            except (ConnectionResetError, OSError):
+                pass
             self._active_writers.discard(writer)
 
     async def _handle_connect(
@@ -192,7 +201,10 @@ class ThrottledProxy:
 
         self._active_writers.add(upstream_writer)
         await self._send_socks5_reply(client_writer, 0x00, address_type=address_type)
-        await self._tunnel_streams(client_reader, upstream_reader, client_writer, upstream_writer)
+        try:
+            await self._tunnel_streams(client_reader, upstream_reader, client_writer, upstream_writer)
+        except Exception:
+            pass
 
     async def _tunnel_streams(
         self,
@@ -201,11 +213,12 @@ class ThrottledProxy:
         client_writer: asyncio.StreamWriter,
         upstream_writer: asyncio.StreamWriter,
     ) -> None:
+        connection_start = time.time()
         client_to_upstream = asyncio.create_task(
-            self._pipe(client_reader, upstream_writer, direction="sent")
+            self._pipe(client_reader, upstream_writer, direction="sent", connection_start=connection_start)
         )
         upstream_to_client = asyncio.create_task(
-            self._pipe(upstream_reader, client_writer, direction="received")
+            self._pipe(upstream_reader, client_writer, direction="received", connection_start=connection_start)
         )
         try:
             done, pending = await asyncio.wait(
@@ -217,7 +230,10 @@ class ThrottledProxy:
             await asyncio.gather(*done, *pending, return_exceptions=True)
         finally:
             upstream_writer.close()
-            await upstream_writer.wait_closed()
+            try:
+                await upstream_writer.wait_closed()
+            except (ConnectionResetError, OSError):
+                pass
             self._active_writers.discard(upstream_writer)
 
     async def _handle_http(
@@ -255,15 +271,22 @@ class ThrottledProxy:
         await self._write_throttled(upstream_writer, request, direction="sent")
 
         content_length = int(headers.get("content-length", "0") or "0")
+        transfer_encoding = headers.get("transfer-encoding", "").lower()
         if content_length:
             body = await client_reader.readexactly(content_length)
             await self._write_throttled(upstream_writer, body, direction="sent")
+        elif "chunked" in transfer_encoding:
+            await self._forward_chunked_body(client_reader, upstream_writer)
 
         try:
-            await self._pipe(upstream_reader, client_writer, direction="received")
+            connection_start = time.time()
+            await self._pipe(upstream_reader, client_writer, direction="received", connection_start=connection_start)
         finally:
             upstream_writer.close()
-            await upstream_writer.wait_closed()
+            try:
+                await upstream_writer.wait_closed()
+            except (ConnectionResetError, OSError):
+                pass
             self._active_writers.discard(upstream_writer)
 
     async def _pipe(
@@ -272,11 +295,16 @@ class ThrottledProxy:
         writer: asyncio.StreamWriter,
         *,
         direction: str,
+        connection_start: float | None = None,
     ) -> None:
+        latency_applied = False
         while True:
             chunk = await reader.read(READ_CHUNK_SIZE)
             if not chunk:
                 break
+            if not latency_applied:
+                await self._apply_latency(connection_start)
+                latency_applied = True
             await self._write_throttled(writer, chunk, direction=direction)
 
     async def _write_throttled(
@@ -290,19 +318,23 @@ class ThrottledProxy:
         if wait:
             await asyncio.sleep(wait)
 
-        delay = calculate_delay_seconds(self.config.latency_ms, self.config.jitter_ms)
-        if delay:
-            await asyncio.sleep(delay)
-
-        if should_drop_chunk(self.config.loss_pct):
-            return
-
         writer.write(chunk)
         await writer.drain()
         if direction == "sent":
             self.config.bytes_sent += len(chunk)
         else:
             self.config.bytes_received += len(chunk)
+
+    async def _apply_latency(self, connection_start: float | None = None) -> None:
+        delay = calculate_delay_seconds(self.config.latency_ms, self.config.jitter_ms)
+        if delay:
+            if connection_start is not None:
+                elapsed = time.time() - connection_start
+                remaining = delay - elapsed
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+            else:
+                await asyncio.sleep(delay)
 
     async def _handle_control(
         self,
@@ -333,7 +365,10 @@ class ThrottledProxy:
             await self._send_json(writer, {"error": str(exc)}, status=400)
         finally:
             writer.close()
-            await writer.wait_closed()
+            try:
+                await writer.wait_closed()
+            except (ConnectionResetError, OSError):
+                pass
 
     def _status_payload(self) -> dict[str, Any]:
         payload = self.config.to_dict()
@@ -438,13 +473,27 @@ class ThrottledProxy:
         )
         await writer.drain()
 
+    async def _forward_chunked_body(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        while True:
+            line = await reader.readuntil(b"\r\n")
+            await self._write_throttled(writer, line, direction="sent")
+            chunk_size_hex = line.decode("ascii").split(";", 1)[0].strip()
+            chunk_size = int(chunk_size_hex, 16)
+            if chunk_size == 0:
+                await self._write_throttled(writer, b"\r\n", direction="sent")
+                break
+            chunk = await reader.readexactly(chunk_size)
+            await self._write_throttled(writer, chunk, direction="sent")
+            crlf = await reader.readexactly(2)
+            await self._write_throttled(writer, crlf, direction="sent")
+
     async def _send_error(
         self,
         writer: asyncio.StreamWriter,
         status: int,
-        message: str,
+        message: str = "",
     ) -> None:
-        body = message.encode("utf-8")
+        body = "Proxy Error".encode("utf-8") if not message else message.encode("utf-8")
         writer.write(
             (
                 f"HTTP/1.1 {status} Error\r\n"

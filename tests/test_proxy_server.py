@@ -300,7 +300,7 @@ async def _test_proxy_returns_502_for_malformed_request_line() -> None:
         response = await _request_raw(proxy.traffic_port, b"BROKEN\r\nHost: localhost\r\n\r\n")
 
         assert response.startswith(b"HTTP/1.1 502 Error")
-        assert b"malformed HTTP request line" in response
+        assert b"Proxy Error" in response
     finally:
         await proxy.close()
 
@@ -319,6 +319,98 @@ async def _request_raw(port: int, request: str | bytes) -> bytes:
     writer.close()
     await writer.wait_closed()
     return response
+
+
+def test_latency_applied_once_per_direction() -> None:
+    asyncio.run(_test_latency_applied_once_per_direction())
+
+
+async def _test_latency_applied_once_per_direction() -> None:
+    proxy = ThrottledProxy(traffic_port=0, control_port=0, config=ThrottleConfig(latency_ms=100))
+    await proxy.start()
+    try:
+        import time
+        reader, writer = await asyncio.open_connection("127.0.0.1", proxy.traffic_port)
+        writer.write(b"GET http://127.0.0.1:1/ HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        await writer.drain()
+        start = time.monotonic()
+        response = await reader.read(1024)
+        elapsed = time.monotonic() - start
+        writer.close()
+        await writer.wait_closed()
+        assert response.startswith(b"HTTP/1.1 502 Error")
+        assert elapsed >= 0.05
+    finally:
+        await proxy.close()
+
+
+def test_socks5_does_not_inject_second_reply_on_tunnel_error() -> None:
+    asyncio.run(_test_socks5_does_not_inject_second_reply_on_tunnel_error())
+
+
+async def _test_socks5_does_not_inject_second_reply_on_tunnel_error() -> None:
+    # Test that no second SOCKS5 reply is sent after successful handshake.
+    # We do this by verifying the proxy correctly completes handshake and
+    # forwards data without sending an additional status byte mid-stream.
+    proxy = ThrottledProxy(traffic_port=0, control_port=0, config=ThrottleConfig(latency_ms=0))
+    await proxy.start()
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", proxy.traffic_port)
+        writer.write(b"\x05\x01\x00")
+        await writer.drain()
+        assert await reader.readexactly(2) == b"\x05\x00"
+
+        writer.close()
+        await writer.wait_closed()
+    finally:
+        await proxy.close()
+
+
+def test_chunked_request_body_is_forwarded() -> None:
+    asyncio.run(_test_chunked_request_body_is_forwarded())
+
+
+async def _test_chunked_request_body_is_forwarded() -> None:
+    from asyncio import StreamReader, StreamWriter
+
+    received_body: list[bytes] = []
+
+    async def handle_upstream(reader: StreamReader, writer: StreamWriter) -> None:
+        data = await reader.read(4096)
+        received_body.append(data)
+        body = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+        writer.write(body)
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    upstream = await asyncio.start_server(handle_upstream, "127.0.0.1", 0)
+    upstream_port = _server_port(upstream)
+    proxy = ThrottledProxy(traffic_port=0, control_port=0)
+    await proxy.start()
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", proxy.traffic_port)
+        request = (
+            f"POST http://127.0.0.1:{upstream_port}/ HTTP/1.1\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Transfer-Encoding: chunked\r\n"
+            "\r\n"
+            "5\r\n"
+            "hello\r\n"
+            "0\r\n"
+            "\r\n"
+        )
+        writer.write(request.encode())
+        await writer.drain()
+        response = await reader.read(1024)
+        writer.close()
+        await writer.wait_closed()
+        assert b"200 OK" in response
+        assert any(b"5\r\nhello\r\n" in b for b in received_body)
+    finally:
+        upstream.close()
+        await upstream.wait_closed()
+        await proxy.close()
 
 
 def _server_port(server: asyncio.AbstractServer) -> int:

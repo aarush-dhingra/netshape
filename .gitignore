@@ -37,6 +37,10 @@ Thumbs.db
 /netshape-implementation-plan.md
 /proxy-approach-plan.md
 
+# Node / Electron
+node_modules/
+test-app/node_modules/
+
 # Cursor / tooling
 .commandcode/
 .cursor/
