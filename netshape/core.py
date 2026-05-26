@@ -20,7 +20,7 @@ import psutil
 
 from .profiles import resolve_settings
 from .proxy_server import ThrottleConfig, ThrottledProxy
-from .units import parse_duration_ms
+from .units import parse_bandwidth, parse_duration_ms, parse_latency, parse_loss
 
 DEFAULT_TRAFFIC_PORT = 8090
 DEFAULT_STATE_PATH = Path.home() / ".netshape" / "state.json"
@@ -372,6 +372,60 @@ def _get_json(port: int, path: str) -> dict[str, Any]:
         return json.loads(data.decode("utf-8") or "{}")
     finally:
         conn.close()
+
+
+def add_rule(
+    *,
+    pattern: str,
+    bandwidth: str | int | float | None = None,
+    latency: str | int | float | None = None,
+    loss: str | int | float | None = None,
+    jitter: str | int | float | None = None,
+    comment: str = "",
+    state_path: Path = DEFAULT_STATE_PATH,
+) -> dict[str, Any]:
+    """Add a per-endpoint throttle rule to the running session."""
+    state = read_state(state_path)
+    if state is None:
+        raise SessionError("no active NetShape session")
+    payload: dict[str, Any] = {"pattern": pattern, "comment": comment}
+    if bandwidth is not None:
+        payload["bandwidth_bps"] = parse_bandwidth(bandwidth)
+    if latency is not None:
+        payload["latency_ms"] = parse_latency(latency)
+    if jitter is not None:
+        payload["jitter_ms"] = parse_duration_ms(jitter, kind="jitter")
+    if loss is not None:
+        payload["loss_pct"] = parse_loss(loss)
+    return _post_json(state.control_port, "/rules", payload)
+
+
+def remove_rule(rule_id: str, *, state_path: Path = DEFAULT_STATE_PATH) -> dict[str, Any]:
+    """Remove a rule by id from the running session."""
+    state = read_state(state_path)
+    if state is None:
+        raise SessionError("no active NetShape session")
+    conn = __import__("http.client", fromlist=["HTTPConnection"]).HTTPConnection(
+        "127.0.0.1", state.control_port, timeout=5
+    )
+    try:
+        conn.request("DELETE", f"/rules/{rule_id}")
+        response = conn.getresponse()
+        data = response.read()
+        if response.status >= 400:
+            raise SessionError(data.decode("utf-8") or f"HTTP {response.status}")
+        return json.loads(data.decode("utf-8") or "{}")
+    finally:
+        conn.close()
+
+
+def list_rules(*, state_path: Path = DEFAULT_STATE_PATH) -> list[dict[str, Any]]:
+    """Return the active rules from the running session."""
+    state = read_state(state_path)
+    if state is None:
+        raise SessionError("no active NetShape session")
+    result = _get_json(state.control_port, "/rules")
+    return result.get("rules", [])
 
 
 def python_command(code: str) -> list[str]:

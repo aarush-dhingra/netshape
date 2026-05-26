@@ -7,9 +7,11 @@ import collections
 import importlib.resources
 import json
 import logging
+import re
 import socket
 import struct
 import time
+import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
@@ -36,6 +38,7 @@ class _ProxyLogHandler(logging.Handler):
         except Exception:
             self.handleError(record)
 
+
 READ_CHUNK_SIZE = 8192
 HEADER_LIMIT = 64 * 1024
 
@@ -54,6 +57,42 @@ class ThrottleConfig:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass
+class ThrottleRule:
+    """A per-target throttle rule.
+
+    ``pattern`` is a case-insensitive regex matched against the target string:
+    * For HTTPS CONNECT and SOCKS5 tunnels the target is the **hostname** only
+      (the proxy cannot inspect the encrypted path).
+    * For plain HTTP the target is the **full absolute URL**
+      (e.g. ``http://api.stripe.com/v1/charges``).
+
+    Any field left as ``None`` falls back to the global proxy setting.
+    """
+
+    id: str
+    pattern: str
+    bandwidth_bps: int | None = None
+    latency_ms: int | None = None
+    jitter_ms: int | None = None
+    loss_pct: float | None = None
+    comment: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class _ConnRules:
+    """Resolved per-connection throttle settings (internal)."""
+
+    bucket: TokenBucket
+    latency_ms: int
+    jitter_ms: int
+    loss_pct: float
+    rule_id: str | None = None
 
 
 class ThrottledProxy:
@@ -90,6 +129,12 @@ class ThrottledProxy:
             logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATE_FORMAT)
         )
         logging.getLogger("netshape").addHandler(self._log_handler)
+        # Per-endpoint throttle rules
+        self._rules: list[ThrottleRule] = []
+        self._rule_buckets: dict[str, TokenBucket] = {}
+        self._rule_patterns: dict[str, re.Pattern[str]] = {}
+
+    # ── Lifecycle ────────────────────────────────────────────────────────────
 
     async def start(self) -> None:
         self.config.started_at = time.time()
@@ -129,6 +174,8 @@ class ThrottledProxy:
             return_exceptions=True,
         )
 
+    # ── Configuration ────────────────────────────────────────────────────────
+
     async def configure(self, updates: dict[str, Any]) -> ThrottleConfig:
         async with self._config_lock:
             if "bandwidth_bps" in updates:
@@ -145,6 +192,90 @@ class ThrottledProxy:
             self._validate_config()
             return self.config
 
+    # ── Rule management ──────────────────────────────────────────────────────
+
+    def add_rule(self, rule_data: dict[str, Any]) -> ThrottleRule:
+        """Create and register a new throttle rule; returns the rule."""
+        rule_id = str(uuid.uuid4())
+        pattern = rule_data.get("pattern")
+        if not pattern:
+            raise ValueError("rule must have a non-empty pattern")
+        # Validate the pattern compiles
+        try:
+            compiled = re.compile(pattern, re.IGNORECASE)
+        except re.error as exc:
+            raise ValueError(f"invalid regex pattern: {exc}") from exc
+
+        rule = ThrottleRule(
+            id=rule_id,
+            pattern=pattern,
+            bandwidth_bps=_opt_int(rule_data.get("bandwidth_bps")),
+            latency_ms=_opt_int(rule_data.get("latency_ms")),
+            jitter_ms=_opt_int(rule_data.get("jitter_ms")),
+            loss_pct=_opt_float(rule_data.get("loss_pct")),
+            comment=str(rule_data.get("comment", "")),
+        )
+        self._rules.append(rule)
+        self._rule_patterns[rule_id] = compiled
+        logger.info(
+            "Rule added: id=%s pattern=%r bw=%s lat=%s loss=%s comment=%r",
+            rule_id[:8],
+            pattern,
+            rule.bandwidth_bps,
+            rule.latency_ms,
+            rule.loss_pct,
+            rule.comment,
+        )
+        return rule
+
+    def remove_rule(self, rule_id: str) -> bool:
+        """Remove a rule by id; returns True if found and removed."""
+        before = len(self._rules)
+        self._rules = [r for r in self._rules if r.id != rule_id]
+        self._rule_buckets.pop(rule_id, None)
+        self._rule_patterns.pop(rule_id, None)
+        removed = len(self._rules) < before
+        if removed:
+            logger.info("Rule removed: id=%s", rule_id[:8])
+        return removed
+
+    def list_rules(self) -> list[ThrottleRule]:
+        return list(self._rules)
+
+    def _resolve_rules(self, target: str) -> _ConnRules:
+        """Return the first matching rule's resolved settings, or global defaults."""
+        for rule in self._rules:
+            pattern = self._rule_patterns.get(rule.id)
+            if pattern is None:
+                try:
+                    pattern = re.compile(rule.pattern, re.IGNORECASE)
+                    self._rule_patterns[rule.id] = pattern
+                except re.error:
+                    continue
+            if pattern.search(target):
+                bps = rule.bandwidth_bps if rule.bandwidth_bps is not None else self.config.bandwidth_bps
+                if rule.id not in self._rule_buckets:
+                    self._rule_buckets[rule.id] = TokenBucket(bps)
+                logger.debug(
+                    "Rule match: target=%r rule=%s (%s)",
+                    target, rule.id[:8], rule.pattern,
+                )
+                return _ConnRules(
+                    bucket=self._rule_buckets[rule.id],
+                    latency_ms=rule.latency_ms if rule.latency_ms is not None else self.config.latency_ms,
+                    jitter_ms=rule.jitter_ms if rule.jitter_ms is not None else self.config.jitter_ms,
+                    loss_pct=rule.loss_pct if rule.loss_pct is not None else self.config.loss_pct,
+                    rule_id=rule.id,
+                )
+        return _ConnRules(
+            bucket=self.bucket,
+            latency_ms=self.config.latency_ms,
+            jitter_ms=self.config.jitter_ms,
+            loss_pct=self.config.loss_pct,
+        )
+
+    # ── Traffic handlers ─────────────────────────────────────────────────────
+
     async def _handle_client(
         self,
         reader: asyncio.StreamReader,
@@ -154,8 +285,6 @@ class ThrottledProxy:
         protocol = "http"
         reply_sent = False
         try:
-            if should_drop_chunk(self.config.loss_pct):
-                return
             first_byte = await reader.readexactly(1)
             if first_byte == b"\x05":
                 protocol = "socks5"
@@ -194,11 +323,17 @@ class ThrottledProxy:
         target: str,
     ) -> None:
         host, port = self._split_host_port(target, default_port=443)
+        rules = self._resolve_rules(host)
+        if should_drop_chunk(rules.loss_pct):
+            logger.debug("CONNECT %s dropped (loss_pct=%.2f)", host, rules.loss_pct)
+            return
         upstream_reader, upstream_writer = await asyncio.open_connection(host, port)
         self._active_writers.add(upstream_writer)
         client_writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         await client_writer.drain()
-        await self._tunnel_streams(client_reader, upstream_reader, client_writer, upstream_writer)
+        await self._tunnel_streams(
+            client_reader, upstream_reader, client_writer, upstream_writer, rules=rules
+        )
 
     async def _handle_socks5(
         self,
@@ -230,6 +365,12 @@ class ThrottledProxy:
         port = struct.unpack(">H", await client_reader.readexactly(2))[0]
         self.config.requests_handled += 1
 
+        rules = self._resolve_rules(host)
+        if should_drop_chunk(rules.loss_pct):
+            logger.debug("SOCKS5 %s dropped (loss_pct=%.2f)", host, rules.loss_pct)
+            await self._send_socks5_reply(client_writer, 0x04, address_type=address_type)
+            return
+
         try:
             upstream_reader, upstream_writer = await asyncio.open_connection(host, port)
         except OSError:
@@ -239,7 +380,9 @@ class ThrottledProxy:
         self._active_writers.add(upstream_writer)
         await self._send_socks5_reply(client_writer, 0x00, address_type=address_type)
         try:
-            await self._tunnel_streams(client_reader, upstream_reader, client_writer, upstream_writer)
+            await self._tunnel_streams(
+                client_reader, upstream_reader, client_writer, upstream_writer, rules=rules
+            )
         except Exception:
             pass
 
@@ -249,13 +392,21 @@ class ThrottledProxy:
         upstream_reader: asyncio.StreamReader,
         client_writer: asyncio.StreamWriter,
         upstream_writer: asyncio.StreamWriter,
+        *,
+        rules: _ConnRules | None = None,
     ) -> None:
         connection_start = time.time()
         client_to_upstream = asyncio.create_task(
-            self._pipe(client_reader, upstream_writer, direction="sent", connection_start=connection_start)
+            self._pipe(
+                client_reader, upstream_writer,
+                direction="sent", connection_start=connection_start, rules=rules,
+            )
         )
         upstream_to_client = asyncio.create_task(
-            self._pipe(upstream_reader, client_writer, direction="received", connection_start=connection_start)
+            self._pipe(
+                upstream_reader, client_writer,
+                direction="received", connection_start=connection_start, rules=rules,
+            )
         )
         try:
             done, pending = await asyncio.wait(
@@ -296,6 +447,13 @@ class ThrottledProxy:
             if parsed.query:
                 path = f"{path}?{parsed.query}"
 
+        # Match against the full URL for HTTP (path is visible); fall back to host.
+        match_target = target if parsed.scheme else f"http://{host}{path}"
+        rules = self._resolve_rules(match_target)
+        if should_drop_chunk(rules.loss_pct):
+            logger.debug("HTTP %s %s dropped (loss_pct=%.2f)", method, match_target, rules.loss_pct)
+            return
+
         upstream_reader, upstream_writer = await asyncio.open_connection(host, port)
         self._active_writers.add(upstream_writer)
         outbound_headers = {
@@ -305,19 +463,22 @@ class ThrottledProxy:
         }
         outbound_headers["host"] = headers.get("host", f"{host}:{port}")
         request = self._build_request(method, path, version, outbound_headers)
-        await self._write_throttled(upstream_writer, request, direction="sent")
+        await self._write_throttled(upstream_writer, request, direction="sent", rules=rules)
 
         content_length = int(headers.get("content-length", "0") or "0")
         transfer_encoding = headers.get("transfer-encoding", "").lower()
         if content_length:
             body = await client_reader.readexactly(content_length)
-            await self._write_throttled(upstream_writer, body, direction="sent")
+            await self._write_throttled(upstream_writer, body, direction="sent", rules=rules)
         elif "chunked" in transfer_encoding:
-            await self._forward_chunked_body(client_reader, upstream_writer)
+            await self._forward_chunked_body(client_reader, upstream_writer, rules=rules)
 
         try:
             connection_start = time.time()
-            await self._pipe(upstream_reader, client_writer, direction="received", connection_start=connection_start)
+            await self._pipe(
+                upstream_reader, client_writer,
+                direction="received", connection_start=connection_start, rules=rules,
+            )
         finally:
             upstream_writer.close()
             try:
@@ -333,6 +494,7 @@ class ThrottledProxy:
         *,
         direction: str,
         connection_start: float | None = None,
+        rules: _ConnRules | None = None,
     ) -> None:
         latency_applied = False
         while True:
@@ -340,9 +502,9 @@ class ThrottledProxy:
             if not chunk:
                 break
             if not latency_applied:
-                await self._apply_latency(connection_start)
+                await self._apply_latency(connection_start, rules=rules)
                 latency_applied = True
-            await self._write_throttled(writer, chunk, direction=direction)
+            await self._write_throttled(writer, chunk, direction=direction, rules=rules)
 
     async def _write_throttled(
         self,
@@ -350,8 +512,10 @@ class ThrottledProxy:
         chunk: bytes,
         *,
         direction: str,
+        rules: _ConnRules | None = None,
     ) -> None:
-        wait = self.bucket.consume(len(chunk))
+        bucket = rules.bucket if rules is not None else self.bucket
+        wait = bucket.consume(len(chunk))
         if wait:
             await asyncio.sleep(wait)
 
@@ -362,8 +526,15 @@ class ThrottledProxy:
         else:
             self.config.bytes_received += len(chunk)
 
-    async def _apply_latency(self, connection_start: float | None = None) -> None:
-        delay = calculate_delay_seconds(self.config.latency_ms, self.config.jitter_ms)
+    async def _apply_latency(
+        self,
+        connection_start: float | None = None,
+        *,
+        rules: _ConnRules | None = None,
+    ) -> None:
+        lat = rules.latency_ms if rules is not None else self.config.latency_ms
+        jit = rules.jitter_ms if rules is not None else self.config.jitter_ms
+        delay = calculate_delay_seconds(lat, jit)
         if delay:
             if connection_start is not None:
                 elapsed = time.time() - connection_start
@@ -372,6 +543,8 @@ class ThrottledProxy:
                     await asyncio.sleep(remaining)
             else:
                 await asyncio.sleep(delay)
+
+    # ── Control API ──────────────────────────────────────────────────────────
 
     async def _handle_control(
         self,
@@ -396,6 +569,20 @@ class ThrottledProxy:
             elif method == "POST" and path == "/shutdown":
                 await self._send_json(writer, {"ok": True})
                 self._shutdown_event.set()
+            # ── Rules API ──────────────────────────────────────────────────
+            elif method == "GET" and path == "/rules":
+                await self._send_json(writer, {"rules": [r.to_dict() for r in self._rules]})
+            elif method == "POST" and path == "/rules":
+                rule_data = json.loads(body.decode("utf-8") or "{}")
+                rule = self.add_rule(rule_data)
+                await self._send_json(writer, rule.to_dict(), status=201)
+            elif method == "DELETE" and path.startswith("/rules/"):
+                rule_id = path[len("/rules/"):]
+                if self.remove_rule(rule_id):
+                    await self._send_json(writer, {"ok": True})
+                else:
+                    await self._send_json(writer, {"error": "rule not found"}, status=404)
+            # ── Dashboard / SSE / Logs ─────────────────────────────────────
             elif method == "GET" and path == "/events":
                 await self._serve_sse(writer)
                 return
@@ -425,40 +612,12 @@ class ThrottledProxy:
                 "running_for_seconds": max(0.0, time.time() - self.config.started_at),
                 "bandwidth_model": "shared_bidirectional",
                 "protocols": ["http", "https-connect", "socks5-connect"],
+                "rules_count": len(self._rules),
             }
         )
         return payload
 
-    async def _read_headers(
-        self,
-        reader: asyncio.StreamReader,
-        *,
-        prefix: bytes = b"",
-    ) -> tuple[bytes, bytes]:
-        data = prefix + await reader.readuntil(b"\r\n\r\n")
-        if len(data) > HEADER_LIMIT:
-            raise ValueError("HTTP headers too large")
-        return data[:-4], b""
-
-    def _parse_request(self, header_bytes: bytes) -> tuple[str, dict[str, str]]:
-        lines = header_bytes.decode("iso-8859-1").split("\r\n")
-        request_line = lines[0]
-        headers: dict[str, str] = {}
-        for line in lines[1:]:
-            if not line:
-                continue
-            key, _, value = line.partition(":")
-            headers[key.strip().lower()] = value.strip()
-        return request_line, headers
-
-    def _split_request_line(self, request_line: str) -> tuple[str, str, str]:
-        parts = request_line.split()
-        if len(parts) != 3:
-            raise ValueError("malformed HTTP request line")
-        method, target, version = parts
-        if not version.startswith("HTTP/"):
-            raise ValueError("malformed HTTP version")
-        return method, target, version
+    # ── Dashboard / SSE / Logs ────────────────────────────────────────────────
 
     async def _serve_sse(self, writer: asyncio.StreamWriter) -> None:
         """Serve Server-Sent Events stream for the dashboard."""
@@ -490,11 +649,7 @@ class ThrottledProxy:
         await self._send_json(writer, {"lines": list(self._log_buffer)})
 
     def _build_sse_data(self) -> dict[str, Any]:
-        """Build the data payload for SSE events.
-
-        Throughput is measured as a per-tick delta (bytes since the last call)
-        so the chart reflects the current rate rather than the session average.
-        """
+        """Build the data payload for SSE events (instantaneous per-tick rates)."""
         now = time.monotonic()
         elapsed = max(0.001, now - self._last_metrics_time)
 
@@ -529,6 +684,7 @@ class ThrottledProxy:
             "connected": True,
             "traffic_port": self.traffic_port,
             "requests_handled": self.config.requests_handled,
+            "rules_count": len(self._rules),
         }
 
     async def _serve_dashboard(self, writer: asyncio.StreamWriter, path: str) -> None:
@@ -571,6 +727,41 @@ class ThrottledProxy:
         )
         await writer.drain()
 
+    # ── HTTP parsing helpers ──────────────────────────────────────────────────
+
+    async def _read_headers(
+        self,
+        reader: asyncio.StreamReader,
+        *,
+        prefix: bytes = b"",
+    ) -> tuple[bytes, bytes]:
+        data = prefix + await reader.readuntil(b"\r\n\r\n")
+        if len(data) > HEADER_LIMIT:
+            raise ValueError("HTTP headers too large")
+        return data[:-4], b""
+
+    def _parse_request(self, header_bytes: bytes) -> tuple[str, dict[str, str]]:
+        lines = header_bytes.decode("iso-8859-1").split("\r\n")
+        request_line = lines[0]
+        headers: dict[str, str] = {}
+        for line in lines[1:]:
+            if not line:
+                continue
+            key, _, value = line.partition(":")
+            headers[key.strip().lower()] = value.strip()
+        return request_line, headers
+
+    def _split_request_line(self, request_line: str) -> tuple[str, str, str]:
+        parts = request_line.split()
+        if len(parts) != 3:
+            raise ValueError("malformed HTTP request line")
+        method, target, version = parts
+        if not version.startswith("HTTP/"):
+            raise ValueError("malformed HTTP version")
+        return method, target, version
+
+    # ── SOCKS5 helpers ────────────────────────────────────────────────────────
+
     async def _read_socks5_host(self, reader: asyncio.StreamReader, address_type: int) -> str:
         if address_type == 0x01:
             return ".".join(str(part) for part in await reader.readexactly(4))
@@ -598,6 +789,8 @@ class ThrottledProxy:
         writer.write(b"\x05" + bytes([code]) + b"\x00" + bytes([address_type]) + bind_address + b"\x00\x00")
         await writer.drain()
 
+    # ── HTTP response helpers ─────────────────────────────────────────────────
+
     def _build_request(
         self,
         method: str,
@@ -617,7 +810,7 @@ class ThrottledProxy:
         status: int = 200,
     ) -> None:
         body = json.dumps(payload).encode("utf-8")
-        reason = "OK" if status == 200 else "Error"
+        reason = {200: "OK", 201: "Created", 400: "Bad Request", 404: "Not Found"}.get(status, "Error")
         writer.write(
             (
                 f"HTTP/1.1 {status} {reason}\r\n"
@@ -630,19 +823,25 @@ class ThrottledProxy:
         )
         await writer.drain()
 
-    async def _forward_chunked_body(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    async def _forward_chunked_body(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        *,
+        rules: _ConnRules | None = None,
+    ) -> None:
         while True:
             line = await reader.readuntil(b"\r\n")
-            await self._write_throttled(writer, line, direction="sent")
+            await self._write_throttled(writer, line, direction="sent", rules=rules)
             chunk_size_hex = line.decode("ascii").split(";", 1)[0].strip()
             chunk_size = int(chunk_size_hex, 16)
             if chunk_size == 0:
-                await self._write_throttled(writer, b"\r\n", direction="sent")
+                await self._write_throttled(writer, b"\r\n", direction="sent", rules=rules)
                 break
             chunk = await reader.readexactly(chunk_size)
-            await self._write_throttled(writer, chunk, direction="sent")
+            await self._write_throttled(writer, chunk, direction="sent", rules=rules)
             crlf = await reader.readexactly(2)
-            await self._write_throttled(writer, crlf, direction="sent")
+            await self._write_throttled(writer, crlf, direction="sent", rules=rules)
 
     async def _send_error(
         self,
@@ -661,6 +860,8 @@ class ThrottledProxy:
             + body
         )
         await writer.drain()
+
+    # ── Misc helpers ─────────────────────────────────────────────────────────
 
     def _split_host_port(self, target: str, *, default_port: int) -> tuple[str, int]:
         if target.startswith("["):
@@ -686,3 +887,13 @@ class ThrottledProxy:
         if not sockets:
             raise RuntimeError("server did not expose a bound socket")
         return int(sockets[0].getsockname()[1])
+
+
+# ── Module-level helpers ─────────────────────────────────────────────────────
+
+def _opt_int(value: Any) -> int | None:
+    return None if value is None else int(value)
+
+
+def _opt_float(value: Any) -> float | None:
+    return None if value is None else float(value)

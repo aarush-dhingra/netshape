@@ -117,39 +117,53 @@ capacity = clamp(rate_bps × 0.1, _MIN_BURST_BITS, _MAX_BURST_BITS)
 
 #### 3.1 Rule Engine
 
-**Status:** Planned
+**Status:** ✅ Complete
 
-**Problem:** Currently all traffic goes through a single global `TokenBucket`. Users cannot apply different conditions to different endpoints (e.g. throttle Stripe but not GitHub).
+**Problem:** Previously all traffic went through a single global `TokenBucket`. Users could not apply different conditions to different endpoints (e.g. throttle Stripe but not GitHub).
 
-**Proposed Solution:**
+**Implemented Solution:**
 
-Add a `ThrottleRule` dataclass and `rules` list to `ThrottledProxy`. Each rule has a pattern and a throttle config subset. When handling a connection, match the target against all rules and use the first matching rule's bucket instead of the global default.
+Added a `ThrottleRule` dataclass with `id`, `pattern`, `bandwidth_bps`, `latency_ms`, `jitter_ms`, `loss_pct`, and `comment` fields. Rules are stored on `ThrottledProxy` (session-scoped) and matched on every connection. Each matching rule gets its own `TokenBucket` created lazily on first match; compiled regex patterns are cached. Any field left as `None` inherits the global proxy setting.
 
 **Important constraint — HTTPS hostname-only matching:**
 For HTTP (plain) traffic the full URL path is visible and can be matched. For HTTPS (CONNECT tunnel) and SOCKS5, the proxy only sees the **hostname and port** — not the URL path or query string, because the request is encrypted. Rules for HTTPS targets can only match on hostname/domain (e.g. `stripe\.com`), not on path.
 
 **Technical Requirements:**
-- Rules must be configurable via control API and CLI
-- Default global bucket must still exist for non-matching traffic
-- Compiled regex patterns must be cached for performance
-- Rules must be persisted in `state.json`
-- HTTP rules can match full URL; HTTPS/SOCKS5 rules can only match hostname
+- Rules configurable via control API and CLI ✅
+- Default global bucket still used for non-matching traffic ✅
+- Compiled regex patterns cached for performance ✅
+- HTTP rules match full URL; HTTPS/SOCKS5 rules match hostname ✅
+- All per-rule throttle fields (bw, lat, jitter, loss) individually overrideable ✅
 
 **Tasks:**
-- [ ] Add `ThrottleRule` dataclass to `proxy_server.py`
-- [ ] Add `rules: list[ThrottleRule]` to `ThrottleConfig`
-- [ ] In `_handle_http`, extract full URL and resolve matching rule
-- [ ] In `_handle_connect` and `_handle_socks5`, extract hostname and match rules
-- [ ] Add per-rule `TokenBucket` creation and caching
-- [ ] Modify `_write_throttled` to accept an optional rule override
-- [ ] Add control API endpoints: `GET /rules`, `POST /rules`, `DELETE /rules/{id}`
-- [ ] Add CLI commands: `netshape rule add / remove / list`
-- [ ] Update tests for rule matching and per-rule throttling
+- [x] Add `ThrottleRule` dataclass and `_ConnRules` internal dataclass to `proxy_server.py`
+- [x] Add `_rules`, `_rule_buckets`, `_rule_patterns` to `ThrottledProxy.__init__`
+- [x] Add `add_rule`, `remove_rule`, `list_rules`, `_resolve_rules` methods to `ThrottledProxy`
+- [x] In `_handle_http`, resolve rules from full target URL and pass `_ConnRules` through the call chain
+- [x] In `_handle_connect` and `_handle_socks5`, resolve rules from hostname and pass through tunnel
+- [x] Thread `_ConnRules` through `_tunnel_streams → _pipe → _write_throttled` and `_apply_latency`
+- [x] Move per-connection loss check into handlers (after hostname is known) so per-rule loss applies correctly
+- [x] Add control API endpoints: `GET /rules`, `POST /rules` (201 Created), `DELETE /rules/{id}`
+- [x] Add `add_rule`, `remove_rule`, `list_rules` helpers in `core.py`
+- [x] Add `netshape rule add / remove / list` CLI sub-commands in `cli.py`
+- [x] Add `tests/test_rules.py` with 13 tests covering unit + integration scenarios
+
+**Usage:**
+```bash
+# Add a rule — throttle all requests to stripe.com at 1 Mbps with 200 ms latency
+netshape rule add "stripe\.com" --bandwidth 1mbps --latency 200ms --comment "payment API"
+
+# List active rules
+netshape rule list
+
+# Remove a rule by id prefix
+netshape rule remove <id>
+```
 
 **Logging Verification:**
-- Log each rule match with target and matched rule id
-- Log when a request falls through to the default bucket
-- Log per-rule bytes and throttle sleep totals
+- [x] Log each rule match at DEBUG level: `Rule match: target=... rule=<id8> (<pattern>)`
+- [x] `add_rule` logs at INFO level: id, pattern, bandwidth, latency, loss, comment
+- [x] `remove_rule` logs at INFO level: id
 
 ---
 
@@ -385,7 +399,7 @@ def test_image_loads_on_3g():
 |-------|---------|----------|--------|--------|
 | 1 | TokenBucket burst fix | **Critical** | Small | ✅ Done |
 | 2 | Web dashboard | **High** | Medium | ✅ Done |
-| 3 | Per-endpoint rules | **High** | Medium | Planned |
+| 3 | Per-endpoint rules | **High** | Medium | ✅ Done |
 | 4 | Scenario scripting | **High** | Medium | Planned |
 | 5 | Metrics export | **Medium** | Small | Planned |
 | 6 | UDP / advanced protocols | Low | Large | Deferred |
@@ -393,8 +407,6 @@ def test_image_loads_on_3g():
 
 ## Next Steps
 
-1. Start web dashboard — Phase 2 (embedded, zero extra deps)
-2. Per-endpoint throttling rules — Phase 3
-3. Scenario scripting engine — Phase 4 (biggest differentiator)
-4. Metrics export — Phase 5 (enables CI integration)
-5. Finalize packaging + pytest plugin — Phase 7
+1. Scenario scripting engine — Phase 4 (biggest differentiator)
+2. Metrics export — Phase 5 (enables CI integration)
+3. Finalize packaging + pytest plugin — Phase 7

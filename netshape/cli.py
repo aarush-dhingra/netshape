@@ -8,7 +8,16 @@ from typing import Optional
 import typer
 
 from . import __version__
-from .core import SessionError, adjust_session, get_status, run_session, stop_session
+from .core import (
+    SessionError,
+    add_rule,
+    adjust_session,
+    get_status,
+    list_rules,
+    remove_rule,
+    run_session,
+    stop_session,
+)
 from .profiles import ProfileError, list_builtin_profiles
 from .speed_test import run_speed_test
 
@@ -178,6 +187,85 @@ def profiles_command() -> None:
             f"{profile.loss_pct * 100:g}% loss, "
             f"{profile.jitter_ms}ms jitter"
         )
+
+
+rule_app = typer.Typer(help="Manage per-endpoint throttle rules.", no_args_is_help=True)
+app.add_typer(rule_app, name="rule")
+
+
+@rule_app.command("add")
+def rule_add(
+    pattern: str = typer.Argument(..., help="Regex matched against the target host or URL."),
+    bandwidth: Optional[str] = typer.Option(None, "--bandwidth", "-b", help="Bandwidth for this rule, e.g. 1mbps."),
+    latency: Optional[str] = typer.Option(None, "--latency", "-l", help="Latency for this rule, e.g. 200ms."),
+    loss: Optional[str] = typer.Option(None, "--loss", help="Packet loss for this rule, e.g. 5%."),
+    jitter: Optional[str] = typer.Option(None, "--jitter", "-j", help="Jitter for this rule, e.g. 20ms."),
+    comment: str = typer.Option("", "--comment", "-c", help="Human-readable label for this rule."),
+) -> None:
+    """Add a per-endpoint throttle rule to the running proxy session.
+
+    Examples:\n
+      netshape rule add stripe\\.com --bandwidth 1mbps --latency 200ms\n
+      netshape rule add "api\\." --loss 5% --comment "flaky API"
+    """
+    try:
+        rule = add_rule(
+            pattern=pattern,
+            bandwidth=bandwidth,
+            latency=latency,
+            loss=loss,
+            jitter=jitter,
+            comment=comment,
+        )
+    except (SessionError, ValueError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"Rule added: {rule['id'][:8]}  pattern={rule['pattern']!r}")
+    if rule.get("comment"):
+        typer.echo(f"  comment: {rule['comment']}")
+
+
+@rule_app.command("remove")
+def rule_remove(rule_id: str = typer.Argument(..., help="Rule id (or prefix) to remove.")) -> None:
+    """Remove a throttle rule from the running proxy session."""
+    try:
+        remove_rule(rule_id)
+    except SessionError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"Rule {rule_id} removed.")
+
+
+@rule_app.command("list")
+def rule_list(json_output: bool = typer.Option(False, "--json", help="Print raw JSON.")) -> None:
+    """List active throttle rules."""
+    try:
+        rules = list_rules()
+    except SessionError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    if json_output:
+        typer.echo(json.dumps(rules, indent=2))
+        return
+
+    if not rules:
+        typer.echo("No rules configured.")
+        return
+
+    for rule in rules:
+        parts = [f"{rule['id'][:8]}  pattern={rule['pattern']!r}"]
+        if rule.get("bandwidth_bps") is not None:
+            parts.append(f"bw={rule['bandwidth_bps']}bps")
+        if rule.get("latency_ms") is not None:
+            parts.append(f"lat={rule['latency_ms']}ms")
+        if rule.get("loss_pct") is not None:
+            parts.append(f"loss={rule['loss_pct'] * 100:.1f}%")
+        if rule.get("jitter_ms") is not None:
+            parts.append(f"jitter={rule['jitter_ms']}ms")
+        if rule.get("comment"):
+            parts.append(f"({rule['comment']})")
+        typer.echo("  ".join(parts))
 
 
 def _format_config(config: dict[str, object]) -> str:
