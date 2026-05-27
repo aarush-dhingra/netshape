@@ -745,13 +745,26 @@ class ThrottledProxy:
                     await self._send_json(writer, {"error": "rule not found"}, status=404)
             # ── Scenarios ──────────────────────────────────────────────────
             elif method == "GET" and path == "/scenarios":
-                from .scenario import list_builtin_scenarios
-                await self._send_json(writer, {"scenarios": list_builtin_scenarios()})
+                from .scenario import list_builtin_scenarios, list_user_scenarios
+                await self._send_json(writer, {
+                    "scenarios": list_builtin_scenarios(),
+                    "user_scenarios": list_user_scenarios(),
+                })
+            elif method == "POST" and path == "/scenarios/save":
+                from .scenario import save_user_scenario
+                scenario_data = json.loads(body.decode("utf-8") or "{}")
+                dest = save_user_scenario(scenario_data)
+                logger.info("Scenario saved: %r → %s", scenario_data.get("name"), dest)
+                await self._send_json(writer, {"saved": dest.stem, "path": str(dest)})
             elif method == "POST" and path == "/scenario/start":
                 data = json.loads(body.decode("utf-8") or "{}")
                 if "builtin" in data:
-                    from .scenario import load_builtin_scenario
-                    scenario = load_builtin_scenario(str(data["builtin"]))
+                    # "builtin" resolves built-in first, then falls back to user scenarios.
+                    from .scenario import ScenarioError, load_builtin_scenario, load_user_scenario
+                    try:
+                        scenario = load_builtin_scenario(str(data["builtin"]))
+                    except ScenarioError:
+                        scenario = load_user_scenario(str(data["builtin"]))
                     data = scenario.to_dict()
                 state = await self.start_scenario(data)
                 await self._send_json(writer, state.to_dict())

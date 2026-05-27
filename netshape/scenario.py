@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 from .profiles import ProfileError, get_builtin_profile
 from .units import parse_bandwidth, parse_duration_ms, parse_jitter, parse_latency, parse_loss
+
+USER_SCENARIOS_DIR = Path.home() / ".netshape" / "scenarios"
 
 
 class ScenarioError(ValueError):
@@ -114,6 +117,39 @@ def list_builtin_scenarios() -> list[str]:
         return sorted(names)
     except Exception:
         return []
+
+
+def list_user_scenarios() -> list[str]:
+    """Return names of user-saved scenarios from ~/.netshape/scenarios/."""
+    if not USER_SCENARIOS_DIR.exists():
+        return []
+    return sorted(p.stem for p in USER_SCENARIOS_DIR.glob("*.json"))
+
+
+def save_user_scenario(scenario_dict: dict[str, Any]) -> Path:
+    """Save a scenario dict to ~/.netshape/scenarios/<name>.json. Returns the path."""
+    import re
+
+    name = str(scenario_dict.get("name", "scenario")).strip()
+    if not name:
+        raise ScenarioError("scenario name is required")
+    safe = re.sub(r"[^\w\-]", "_", name)
+    USER_SCENARIOS_DIR.mkdir(parents=True, exist_ok=True)
+    dest = USER_SCENARIOS_DIR / f"{safe}.json"
+    dest.write_text(json.dumps(scenario_dict, indent=2), encoding="utf-8")
+    return dest
+
+
+def load_user_scenario(name: str) -> Scenario:
+    """Load a user-saved scenario by name from ~/.netshape/scenarios/."""
+    path = USER_SCENARIOS_DIR / f"{name}.json"
+    if not path.exists():
+        raise ScenarioError(f"user scenario not found: {name!r}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ScenarioError(f"failed to read user scenario {name!r}: {exc}") from exc
+    return parse_scenario_dict(data)
 
 
 def parse_scenario_dict(data: dict[str, Any]) -> Scenario:

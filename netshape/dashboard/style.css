@@ -402,6 +402,29 @@ button:active {
   flex: 1;
 }
 
+/* ─── BANDWIDTH UNIT TOGGLE ──────────────────────────────────────────────── */
+.bw-label-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.unit-toggle {
+  width: auto;
+  padding: 2px 6px;
+  font-size: 11px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  outline: none;
+}
+
+.unit-toggle:focus {
+  border-color: var(--accent-blue);
+}
+
 .btn-small {
   width: auto;
   padding: 4px 10px;

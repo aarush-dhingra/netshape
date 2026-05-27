@@ -139,6 +139,7 @@ const els = {
   profileSelect: document.getElementById('profile-select'),
   bwSlider: document.getElementById('bw-slider'),
   bwValue: document.getElementById('bw-value'),
+  bwUnitSelect: document.getElementById('bw-unit-select'),
   latSlider: document.getElementById('lat-slider'),
   latValueControl: document.getElementById('lat-value-control'),
   lossSlider: document.getElementById('loss-slider'),
@@ -151,6 +152,26 @@ const els = {
   configDisplay: document.getElementById('config-display'),
 };
 
+// ─── SLIDER DIRTY FLAG ────────────────────────────────────────────────────
+// Prevents SSE config updates from snapping sliders back while user is editing.
+let slidersDirty = false;
+let slidersDirtyTimer = null;
+
+function markSlidersDirty() {
+  slidersDirty = true;
+  clearTimeout(slidersDirtyTimer);
+  // Auto-clear after 15 s of inactivity so SSE can resume syncing
+  slidersDirtyTimer = setTimeout(() => { slidersDirty = false; }, 15000);
+}
+
+function clearSlidersDirty() {
+  slidersDirty = false;
+  clearTimeout(slidersDirtyTimer);
+}
+
+// ─── BANDWIDTH UNIT STATE ─────────────────────────────────────────────────
+let bwUnit = 'mbps'; // 'mbps' | 'kbps'
+
 const profiles = {
   none:      { bandwidth_bps: 0,       latency_ms: 0,   loss_pct: 0,     jitter_ms: 0  },
   '3g':      { bandwidth_bps: 1500000, latency_ms: 100, loss_pct: 0.01,  jitter_ms: 20 },
@@ -159,15 +180,25 @@ const profiles = {
   dsl:       { bandwidth_bps: 5000000, latency_ms: 30,  loss_pct: 0.001, jitter_ms: 5  },
 };
 
-function bpsToMbps(bps) {
-  return (bps / 1_000_000).toFixed(1);
+/** Convert the current bandwidth slider value to bps, respecting bwUnit. */
+function sliderToBps() {
+  const v = parseInt(els.bwSlider.value, 10);
+  return bwUnit === 'kbps' ? v * 1_000 : v * 1_000_000;
+}
+
+/** Convert bps → slider integer in the current unit. */
+function bpsToSlider(bps) {
+  return bwUnit === 'kbps'
+    ? Math.round(bps / 1_000)
+    : Math.round(bps / 1_000_000);
 }
 
 function updateSliderLabels() {
-  if (els.bwSlider.value === '0') {
+  const v = parseInt(els.bwSlider.value, 10);
+  if (v === 0) {
     els.bwValue.textContent = 'Unlimited';
   } else {
-    els.bwValue.textContent = `${els.bwSlider.value} Mbps`;
+    els.bwValue.textContent = `${v} ${bwUnit === 'kbps' ? 'kbps' : 'Mbps'}`;
   }
   els.latValueControl.textContent = `${els.latSlider.value} ms`;
   els.lossValueControl.textContent = `${els.lossSlider.value}%`;
@@ -177,25 +208,43 @@ function updateSliderLabels() {
 function setSlidersFromProfile(profileName) {
   const p = profiles[profileName];
   if (!p) return;
-  els.bwSlider.value = bpsToMbps(p.bandwidth_bps);
+  els.bwSlider.value = bpsToSlider(p.bandwidth_bps);
   els.latSlider.value = p.latency_ms;
   els.lossSlider.value = (p.loss_pct * 100).toFixed(1);
   els.jitterSlider.value = p.jitter_ms;
   updateSliderLabels();
 }
 
-// ─── SLIDER EVENT LISTENERS ───────────────────────────────────────────────
+// ─── SLIDER / UNIT EVENT LISTENERS ───────────────────────────────────────
 els.profileSelect.addEventListener('change', () => {
   setSlidersFromProfile(els.profileSelect.value);
 });
 
 [els.bwSlider, els.latSlider, els.lossSlider, els.jitterSlider].forEach(s => {
-  s.addEventListener('input', updateSliderLabels);
+  s.addEventListener('input', () => { markSlidersDirty(); updateSliderLabels(); });
+});
+
+// Bandwidth unit toggle (Mbps ↔ kbps)
+els.bwUnitSelect?.addEventListener('change', () => {
+  const newUnit = els.bwUnitSelect.value;
+  if (newUnit === bwUnit) return;
+  // Convert the current slider value to bps then back in the new unit
+  const currentBps = sliderToBps();
+  bwUnit = newUnit;
+  if (bwUnit === 'kbps') {
+    els.bwSlider.max = 100_000; // 100 000 kbps = 100 Mbps
+    els.bwSlider.step = 100;
+  } else {
+    els.bwSlider.max = 200;
+    els.bwSlider.step = 1;
+  }
+  els.bwSlider.value = bpsToSlider(currentBps);
+  updateSliderLabels();
 });
 
 els.applyBtn.addEventListener('click', async () => {
   const payload = {
-    bandwidth_bps: parseInt(els.bwSlider.value) * 1_000_000,
+    bandwidth_bps: sliderToBps(),
     latency_ms: parseInt(els.latSlider.value),
     loss_pct: parseFloat(els.lossSlider.value) / 100,
     jitter_ms: parseInt(els.jitterSlider.value),
@@ -208,6 +257,7 @@ els.applyBtn.addEventListener('click', async () => {
     });
     const data = await res.json();
     updateConfigDisplay(data);
+    clearSlidersDirty(); // Applied — SSE may resume syncing
   } catch (err) {
     console.error('Failed to apply config:', err);
   }
@@ -219,8 +269,10 @@ function updateConfigDisplay(config) {
 }
 
 function updateSlidersFromConfig(config) {
+  // Skip while the user is actively editing the sliders to prevent snap-back.
+  if (slidersDirty) return;
   if (config.bandwidth_bps !== undefined) {
-    els.bwSlider.value = Math.round(config.bandwidth_bps / 1_000_000);
+    els.bwSlider.value = bpsToSlider(config.bandwidth_bps);
   }
   if (config.latency_ms !== undefined) els.latSlider.value = config.latency_ms;
   if (config.loss_pct !== undefined) els.lossSlider.value = (config.loss_pct * 100).toFixed(1);
@@ -388,14 +440,28 @@ async function loadBuiltinScenarios() {
     const res = await fetch('/scenarios');
     if (!res.ok) return;
     const data = await res.json();
-    const names = data.scenarios || [];
-    names.forEach(name => {
-      const opt = document.createElement('option');
-      opt.value = name;
-      opt.textContent = name.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-      scenarioSelect?.appendChild(opt);
-    });
-    if (runScenarioBtn) runScenarioBtn.disabled = names.length === 0;
+
+    const builtin = data.scenarios || [];
+    const user = data.user_scenarios || [];
+
+    function addOptions(names, groupLabel) {
+      if (names.length === 0) return;
+      const grp = document.createElement('optgroup');
+      grp.label = groupLabel;
+      names.forEach(name => {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        grp.appendChild(opt);
+      });
+      scenarioSelect?.appendChild(grp);
+    }
+
+    addOptions(builtin, 'Built-in');
+    addOptions(user, 'Saved');
+
+    const total = builtin.length + user.length;
+    if (runScenarioBtn) runScenarioBtn.disabled = total === 0;
   } catch (_) {}
 }
 
@@ -532,14 +598,15 @@ function addPhaseRow() {
 
 document.getElementById('add-phase-btn')?.addEventListener('click', addPhaseRow);
 
-document.getElementById('run-custom-btn')?.addEventListener('click', async () => {
+/** Build scenario dict from the custom form inputs. Returns null if validation fails. */
+function buildCustomScenarioDict() {
   const customMsg = document.getElementById('custom-scenario-msg');
   const name = document.getElementById('custom-scenario-name')?.value.trim() || 'Custom Scenario';
   const rows = document.querySelectorAll('#custom-phases-list .phase-row');
 
   if (rows.length === 0) {
     if (customMsg) { customMsg.style.color = '#f44336'; customMsg.textContent = 'Add at least one phase.'; }
-    return;
+    return null;
   }
 
   const phases = [...rows].map((row, i) => {
@@ -550,10 +617,7 @@ document.getElementById('run-custom-btn')?.addEventListener('click', async () =>
     const lossPct = parseFloat(row.querySelector('.phase-loss')?.value || '0');
     const jitterMs = parseInt(row.querySelector('.phase-jitter')?.value || '0', 10);
 
-    const phase = {
-      name: phaseName,
-      duration_ms: durSec * 1000,
-    };
+    const phase = { name: phaseName, duration_ms: durSec * 1000 };
     if (bwKbps > 0) phase.bandwidth_bps = Math.round(bwKbps * 1000);
     if (latMs > 0) phase.latency_ms = latMs;
     if (lossPct > 0) phase.loss_pct = lossPct / 100;
@@ -561,17 +625,53 @@ document.getElementById('run-custom-btn')?.addEventListener('click', async () =>
     return phase;
   });
 
+  return { name, phases };
+}
+
+document.getElementById('save-custom-btn')?.addEventListener('click', async () => {
+  const customMsg = document.getElementById('custom-scenario-msg');
+  const scenarioDict = buildCustomScenarioDict();
+  if (!scenarioDict) return;
+
+  try {
+    const res = await fetch('/scenarios/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(scenarioDict),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (customMsg) { customMsg.style.color = '#f44336'; customMsg.textContent = `Save failed: ${data.error || res.status}`; }
+    } else {
+      if (customMsg) { customMsg.style.color = '#81c784'; customMsg.textContent = `Saved as "${data.saved}"`; }
+      setTimeout(() => { if (customMsg) customMsg.textContent = ''; }, 4000);
+      // Refresh the built-in/saved scenario list
+      if (scenarioSelect) {
+        while (scenarioSelect.children.length > 1) scenarioSelect.removeChild(scenarioSelect.lastChild);
+      }
+      loadBuiltinScenarios();
+    }
+  } catch (err) {
+    if (customMsg) { customMsg.style.color = '#f44336'; customMsg.textContent = `Failed: ${err.message}`; }
+  }
+});
+
+document.getElementById('run-custom-btn')?.addEventListener('click', async () => {
+  const customMsg = document.getElementById('custom-scenario-msg');
+  const scenarioDict = buildCustomScenarioDict();
+  if (!scenarioDict) return;
+
   try {
     const res = await fetch('/scenario/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, phases }),
+      body: JSON.stringify(scenarioDict),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       if (customMsg) { customMsg.style.color = '#f44336'; customMsg.textContent = `Error: ${data.error || res.status}`; }
     } else {
-      if (customMsg) { customMsg.style.color = '#81c784'; customMsg.textContent = `Started: ${name}`; }
+      if (customMsg) { customMsg.style.color = '#81c784'; customMsg.textContent = `Started: ${scenarioDict.name}`; }
       setTimeout(() => { if (customMsg) customMsg.textContent = ''; }, 4000);
     }
   } catch (err) {
@@ -716,7 +816,7 @@ document.getElementById('add-rule-submit-btn')?.addEventListener('click', async 
     updateConfigDisplay(config);
 
     if (config.bandwidth_bps !== undefined) {
-      els.bwSlider.value = Math.round(config.bandwidth_bps / 1_000_000);
+      els.bwSlider.value = bpsToSlider(config.bandwidth_bps);
       els.latSlider.value = config.latency_ms || 0;
       els.lossSlider.value = (config.loss_pct || 0) * 100;
       els.jitterSlider.value = config.jitter_ms || 0;

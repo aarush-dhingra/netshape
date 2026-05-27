@@ -294,18 +294,23 @@ app.add_typer(scenario_app, name="scenario")
 
 @scenario_app.command("run")
 def scenario_run(
-    scenario_file: Optional[Path] = typer.Argument(None, help="Path to a .yaml scenario file."),
-    builtin: Optional[str] = typer.Option(None, "--builtin", "-b", help="Run a built-in scenario by name."),
+    scenario_file: Optional[Path] = typer.Argument(None, help="Path to a .yaml/.json scenario file."),
+    builtin: Optional[str] = typer.Option(
+        None, "--builtin", "-b",
+        help="Run a built-in or saved scenario by name.",
+    ),
     no_wait: bool = typer.Option(False, "--no-wait", help="Submit scenario and return immediately."),
 ) -> None:
     """Run a scenario against the active proxy session.
 
     Examples:\n
       netshape scenario run --builtin subway\n
+      netshape scenario run --builtin my-custom-scenario\n
       netshape scenario run ./my-scenario.yaml
     """
     try:
         if builtin:
+            # The server resolves built-in first, then falls back to user-saved scenarios.
             scenario_dict: dict = {"builtin": builtin}
         elif scenario_file:
             from .scenario import ScenarioError, load_scenario
@@ -384,14 +389,25 @@ def scenario_status(json_output: bool = typer.Option(False, "--json")) -> None:
 
 @scenario_app.command("list")
 def scenario_list() -> None:
-    """List available built-in scenarios."""
-    from .scenario import list_builtin_scenarios
-    names = list_builtin_scenarios()
-    if not names:
-        typer.echo("No built-in scenarios found. Make sure pyyaml is installed.")
+    """List available built-in and user-saved scenarios."""
+    from .scenario import list_builtin_scenarios, list_user_scenarios
+
+    builtin = list_builtin_scenarios()
+    user = list_user_scenarios()
+
+    if not builtin and not user:
+        typer.echo("No scenarios found. Make sure pyyaml is installed.")
         return
-    for name in names:
-        typer.echo(f"  {name}")
+
+    if builtin:
+        typer.echo("Built-in:")
+        for name in builtin:
+            typer.echo(f"  {name}")
+
+    if user:
+        typer.echo("Saved:")
+        for name in user:
+            typer.echo(f"  {name}")
 
 
 # ── Metrics command ───────────────────────────────────────────────────────────

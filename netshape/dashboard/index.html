@@ -77,7 +77,13 @@
         <div class="form-group">
           <div class="form-label">
             <span>Bandwidth</span>
-            <span id="bw-value" class="value">Unlimited</span>
+            <div class="bw-label-right">
+              <span id="bw-value" class="value">Unlimited</span>
+              <select id="bw-unit-select" class="unit-toggle">
+                <option value="mbps">Mbps</option>
+                <option value="kbps">kbps</option>
+              </select>
+            </div>
           </div>
           <input type="range" id="bw-slider" min="0" max="200" value="0">
         </div>
@@ -218,6 +224,7 @@
         <div class="form-row btn-row" style="margin-top:8px">
           <button id="add-phase-btn" class="btn-secondary">+ Phase</button>
           <button id="run-custom-btn">▶ Run</button>
+          <button id="save-custom-btn" class="btn-secondary">💾 Save</button>
         </div>
         <div id="custom-scenario-msg" class="msg-line"></div>
       </div>
