@@ -795,14 +795,15 @@ document.getElementById('add-rule-submit-btn')?.addEventListener('click', async 
   const pattern = document.getElementById('rule-pattern-input')?.value.trim();
   if (!pattern) { showRuleMsg('Pattern is required.', true); return; }
 
-  const bwKbps  = parseFloat(document.getElementById('rule-bw-input')?.value || '0');
+  const bwVal   = parseFloat(document.getElementById('rule-bw-input')?.value || '0');
+  const bwUnitR = document.getElementById('rule-bw-unit')?.value || 'kbps';
   const latMs   = parseInt(document.getElementById('rule-lat-input')?.value || '0', 10);
   const lossPct = parseFloat(document.getElementById('rule-loss-input')?.value || '0');
   const jitterMs = parseInt(document.getElementById('rule-jitter-input')?.value || '0', 10);
   const comment = document.getElementById('rule-comment-input')?.value.trim() || '';
 
   const payload = { pattern, comment };
-  if (bwKbps > 0)   payload.bandwidth_bps = Math.round(bwKbps * 1000);
+  if (bwVal > 0)    payload.bandwidth_bps = Math.round(bwVal * (bwUnitR === 'mbps' ? 1_000_000 : 1_000));
   if (latMs > 0)    payload.latency_ms = latMs;
   if (lossPct > 0)  payload.loss_pct = lossPct / 100;
   if (jitterMs > 0) payload.jitter_ms = jitterMs;
