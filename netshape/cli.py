@@ -22,6 +22,7 @@ from .core import (
     get_status,
     list_rules,
     remove_rule,
+    toggle_rule,
     run_session,
     start_scenario_on_session,
     stop_scenario_on_session,
@@ -274,7 +275,8 @@ def rule_list(json_output: bool = typer.Option(False, "--json", help="Print raw 
         return
 
     for rule in rules:
-        parts = [f"{rule['id'][:8]}  pattern={rule['pattern']!r}"]
+        flag = "[on] " if rule.get("enabled", True) else "[off]"
+        parts = [f"{flag} {rule['id'][:8]}  pattern={rule['pattern']!r}"]
         if rule.get("bandwidth_bps") is not None:
             parts.append(f"bw={_format_bps(int(rule['bandwidth_bps']))}")
         if rule.get("latency_ms") is not None:
@@ -286,6 +288,34 @@ def rule_list(json_output: bool = typer.Option(False, "--json", help="Print raw 
         if rule.get("comment"):
             parts.append(f"({rule['comment']})")
         typer.echo("  ".join(parts))
+
+
+@rule_app.command("enable")
+def rule_enable(
+    rule_id: str = typer.Argument(help="Rule id prefix or comment/name."),
+) -> None:
+    """Enable a per-endpoint throttle rule."""
+    try:
+        rule = toggle_rule(rule_id, enabled=True)
+        label = rule.get("comment") or rule.get("id", "")[:8]
+        typer.echo(f"Rule enabled: {label}")
+    except SessionError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+
+@rule_app.command("disable")
+def rule_disable(
+    rule_id: str = typer.Argument(help="Rule id prefix or comment/name."),
+) -> None:
+    """Disable a per-endpoint throttle rule (keeps it saved, just inactive)."""
+    try:
+        rule = toggle_rule(rule_id, enabled=False)
+        label = rule.get("comment") or rule.get("id", "")[:8]
+        typer.echo(f"Rule disabled: {label}")
+    except SessionError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
 
 
 scenario_app = typer.Typer(help="Run and manage network condition scenarios.", no_args_is_help=True)

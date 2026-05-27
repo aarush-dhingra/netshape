@@ -706,8 +706,15 @@ function renderRulesList(rules) {
     if (r.jitter_ms != null)     parts.push(`jitter: ${r.jitter_ms}ms`);
     const label = r.comment || r.pattern;
     const detail = parts.length ? parts.join(' · ') : 'no throttle overrides';
+    const enabled = r.enabled !== false; // default true
     return `
-      <div class="rule-row" data-id="${escapeHtml(r.id)}">
+      <div class="rule-row ${enabled ? '' : 'rule-row--disabled'}" data-id="${escapeHtml(r.id)}">
+        <button class="rule-toggle ${enabled ? 'rule-toggle--on' : 'rule-toggle--off'}"
+                title="${enabled ? 'Disable rule' : 'Enable rule'}"
+                data-id="${escapeHtml(r.id)}"
+                data-enabled="${enabled}">
+          <span class="rule-toggle-dot"></span>
+        </button>
         <div class="rule-info">
           <div class="rule-name">${escapeHtml(label)}</div>
           <div class="rule-pattern">${escapeHtml(r.pattern)}</div>
@@ -717,9 +724,34 @@ function renderRulesList(rules) {
       </div>`;
   }).join('');
 
+  container.querySelectorAll('.rule-toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const currently = btn.dataset.enabled === 'true';
+      toggleRule(btn.dataset.id, !currently);
+    });
+  });
+
   container.querySelectorAll('.rule-remove-btn').forEach(btn => {
     btn.addEventListener('click', () => removeRule(btn.dataset.id));
   });
+}
+
+async function toggleRule(ruleId, enabled) {
+  try {
+    const res = await fetch(`/rules/${encodeURIComponent(ruleId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    });
+    if (res.ok) {
+      await refreshRules();
+    } else {
+      const data = await res.json().catch(() => ({}));
+      showRuleMsg(`Toggle failed: ${data.error || res.status}`, true);
+    }
+  } catch (err) {
+    showRuleMsg(`Failed: ${err.message}`, true);
+  }
 }
 
 async function removeRule(ruleId) {

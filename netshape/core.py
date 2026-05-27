@@ -176,9 +176,13 @@ def run_session(
     write_state(state, state_path)
 
     # Restore rules saved from the previous session (best-effort).
+    # Rules always start DISABLED so the user can consciously re-enable them.
     for rule_dict in _load_persisted_rules():
         try:
-            _post_json(state.control_port, "/rules", rule_dict)
+            result = _post_json(state.control_port, "/rules", rule_dict)
+            rule_id = result.get("id", "")
+            if rule_id:
+                _patch_json(state.control_port, f"/rules/{rule_id}", {"enabled": False})
         except Exception:
             pass
 
@@ -392,6 +396,20 @@ def _post_json(port: int, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         conn.close()
 
 
+def _patch_json(port: int, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    body = json.dumps(payload).encode("utf-8")
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        conn.request("PATCH", path, body=body, headers={"Content-Type": "application/json"})
+        response = conn.getresponse()
+        data = response.read()
+        if response.status >= 400:
+            raise SessionError(data.decode("utf-8") or f"HTTP {response.status}")
+        return json.loads(data.decode("utf-8") or "{}")
+    finally:
+        conn.close()
+
+
 def _get_json(port: int, path: str) -> dict[str, Any]:
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     try:
@@ -474,6 +492,26 @@ def remove_rule(rule_id: str, *, state_path: Path = DEFAULT_STATE_PATH) -> dict[
     except Exception:
         pass
     return result
+
+
+def toggle_rule(rule_id: str, enabled: bool, *, state_path: Path = DEFAULT_STATE_PATH) -> dict[str, Any]:
+    """Enable or disable a rule by id prefix or comment/name."""
+    state = read_state(state_path)
+    if state is None:
+        raise SessionError("no active NetShape session")
+
+    # Resolve comment/name → id (same logic as remove_rule)
+    resolved = rule_id
+    try:
+        rules = _get_json(state.control_port, "/rules").get("rules", [])
+        for r in rules:
+            if r.get("comment", "").lower() == rule_id.lower():
+                resolved = r["id"]
+                break
+    except Exception:
+        pass
+
+    return _patch_json(state.control_port, f"/rules/{resolved}", {"enabled": enabled})
 
 
 def list_rules(*, state_path: Path = DEFAULT_STATE_PATH) -> list[dict[str, Any]]:

@@ -569,6 +569,58 @@ button:active {
   margin-top: 2px;
 }
 
+/* ─── RULE TOGGLE ────────────────────────────────────────────────────────── */
+.rule-toggle {
+  width: 34px;
+  height: 20px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  border: none;
+  cursor: pointer;
+  position: relative;
+  transition: background 0.2s;
+  padding: 0;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.rule-toggle--on {
+  background: var(--accent-green);
+}
+
+.rule-toggle--off {
+  background: #444;
+}
+
+.rule-toggle-dot {
+  position: absolute;
+  top: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  transition: left 0.2s;
+  pointer-events: none;
+}
+
+.rule-toggle--on  .rule-toggle-dot { left: 16px; }
+.rule-toggle--off .rule-toggle-dot { left: 3px; }
+
+.rule-toggle:hover {
+  opacity: 0.85;
+  transform: none;
+}
+
+.rule-row--disabled {
+  opacity: 0.45;
+}
+
+.rule-row--disabled .rule-name,
+.rule-row--disabled .rule-pattern,
+.rule-row--disabled .rule-detail {
+  color: var(--text-secondary);
+}
+
 .rule-form {
   border-top: 1px solid var(--border-color);
   padding-top: 12px;

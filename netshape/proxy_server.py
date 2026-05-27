@@ -95,6 +95,7 @@ class ThrottleRule:
     jitter_ms: int | None = None
     loss_pct: float | None = None
     comment: str = ""
+    enabled: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -297,11 +298,28 @@ class ThrottledProxy:
         logger.info("Rule removed: id=%s", full_id[:8])
         return True
 
+    def toggle_rule(self, rule_id: str, enabled: bool) -> ThrottleRule | None:
+        """Enable or disable a rule by exact ID or unambiguous prefix."""
+        matched = [r for r in self._rules if r.id == rule_id or r.id.startswith(rule_id)]
+        if len(matched) != 1:
+            return None
+        rule = matched[0]
+        rule.enabled = enabled
+        logger.info(
+            "Rule %s: id=%s pattern=%r",
+            "enabled" if enabled else "disabled",
+            rule.id[:8],
+            rule.pattern,
+        )
+        return rule
+
     def list_rules(self) -> list[ThrottleRule]:
         return list(self._rules)
 
     def _resolve_rules(self, target: str) -> _ConnRules:
         for rule in self._rules:
+            if not rule.enabled:
+                continue
             pattern = self._rule_patterns.get(rule.id)
             if pattern is None:
                 try:
@@ -743,6 +761,17 @@ class ThrottledProxy:
                     await self._send_json(writer, {"ok": True})
                 else:
                     await self._send_json(writer, {"error": "rule not found"}, status=404)
+            elif method == "PATCH" and path.startswith("/rules/"):
+                rule_id = path[len("/rules/"):]
+                patch = json.loads(body.decode("utf-8") or "{}")
+                if "enabled" not in patch:
+                    await self._send_json(writer, {"error": "body must contain 'enabled'"}, status=400)
+                else:
+                    rule = self.toggle_rule(rule_id, bool(patch["enabled"]))
+                    if rule is None:
+                        await self._send_json(writer, {"error": "rule not found"}, status=404)
+                    else:
+                        await self._send_json(writer, rule.to_dict())
             # ── Scenarios ──────────────────────────────────────────────────
             elif method == "GET" and path == "/scenarios":
                 from .scenario import list_builtin_scenarios, list_user_scenarios
