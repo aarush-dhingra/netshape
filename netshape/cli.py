@@ -426,8 +426,10 @@ def _watch_status() -> None:
             while True:
                 try:
                     payload = get_status()
-                except SessionError:
-                    live.update("[red]No active session[/red]")
+                except (SessionError, OSError):
+                    # OSError covers ConnectionRefusedError when the proxy exits
+                    # unexpectedly while we are watching.
+                    live.update("[red]No active session (or proxy unreachable)[/red]")
                     time.sleep(1)
                     continue
                 live.update(_make_watch_table(payload))

@@ -15,7 +15,7 @@ phases:
 
   - name: "Underground — No Signal"
     duration: "20s"
-    bandwidth: "0"
+    bandwidth: 0
     latency: "2000ms"
     loss: "95%"
     jitter: "500ms"

@@ -22,7 +22,7 @@ phases:
 
   - name: "Outage"
     duration: "10s"
-    bandwidth: "0"
+    bandwidth: 0
     latency: "3000ms"
     loss: "99%"
 

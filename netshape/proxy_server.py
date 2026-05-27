@@ -277,14 +277,20 @@ class ThrottledProxy:
         return rule
 
     def remove_rule(self, rule_id: str) -> bool:
-        before = len(self._rules)
-        self._rules = [r for r in self._rules if r.id != rule_id]
-        self._rule_buckets.pop(rule_id, None)
-        self._rule_patterns.pop(rule_id, None)
-        removed = len(self._rules) < before
-        if removed:
-            logger.info("Rule removed: id=%s", rule_id[:8])
-        return removed
+        """Remove a rule by exact ID or unambiguous prefix (e.g. first 8 chars)."""
+        # Resolve prefix → full ID so the bucket/pattern maps can be cleaned up.
+        matched = [r.id for r in self._rules if r.id == rule_id or r.id.startswith(rule_id)]
+        if len(matched) > 1:
+            # Ambiguous prefix — require more characters
+            return False
+        if not matched:
+            return False
+        full_id = matched[0]
+        self._rules = [r for r in self._rules if r.id != full_id]
+        self._rule_buckets.pop(full_id, None)
+        self._rule_patterns.pop(full_id, None)
+        logger.info("Rule removed: id=%s", full_id[:8])
+        return True
 
     def list_rules(self) -> list[ThrottleRule]:
         return list(self._rules)
@@ -347,8 +353,19 @@ class ThrottledProxy:
         try:
             scenario = parse_scenario_dict(scenario_dict)
         except Exception as exc:
-            logger.error("Scenario parse error: %s", exc)
-            self._scenario_state.error = str(exc)
+            msg = str(exc)
+            logger.error(
+                "Scenario parse error: %s\n"
+                "  Dict keys at top level: %s\n"
+                "  Phase[0] keys: %s",
+                msg,
+                list(scenario_dict.keys()) if isinstance(scenario_dict, dict) else type(scenario_dict),
+                list(scenario_dict["phases"][0].keys())
+                if isinstance(scenario_dict, dict) and scenario_dict.get("phases")
+                else "(no phases)",
+            )
+            self._scenario_state.error = msg
+            self._scenario_state.running = False
             return
 
         pre_config = {
@@ -431,7 +448,7 @@ class ThrottledProxy:
                     pass
                 return
 
-            header_bytes, _ = await self._read_headers(reader, prefix=first_byte)
+            header_bytes = await self._read_headers(reader, prefix=first_byte)
             request_line, headers = self._parse_request(header_bytes)
             method, target, version = self._split_request_line(request_line)
             self.config.requests_handled += 1
@@ -691,10 +708,10 @@ class ThrottledProxy:
         writer: asyncio.StreamWriter,
     ) -> None:
         try:
-            header_bytes, body_prefix = await self._read_headers(reader)
+            header_bytes = await self._read_headers(reader)
             request_line, headers = self._parse_request(header_bytes)
             method, path, _ = request_line.split(" ", 2)
-            body = body_prefix
+            body = b""
             content_length = int(headers.get("content-length", "0") or "0")
             if content_length > len(body):
                 body += await reader.readexactly(content_length - len(body))
@@ -883,11 +900,21 @@ class ThrottledProxy:
             "latency_ms": latency,
             "loss_pct": loss,
             "classification": classification,
-            "connected": True,
+            # "connected" is intentionally absent: receiving this SSE frame already
+            # proves the stream is open; the JS client tracks connection state itself.
             "traffic_port": self.traffic_port,
             "requests_handled": self.config.requests_handled,
             "rules_count": len(self._rules),
             "scenario": self._scenario_state.to_dict(),
+            # Live config snapshot — lets the dashboard keep sliders/Current Config
+            # panel in sync when a scenario or external adjust changes the settings.
+            "config": {
+                "bandwidth_bps": self.config.bandwidth_bps,
+                "latency_ms": self.config.latency_ms,
+                "loss_pct": self.config.loss_pct,
+                "jitter_ms": self.config.jitter_ms,
+                "profile": self.config.profile,
+            },
         }
 
     async def _serve_dashboard(self, writer: asyncio.StreamWriter, path: str) -> None:
@@ -936,11 +963,18 @@ class ThrottledProxy:
         reader: asyncio.StreamReader,
         *,
         prefix: bytes = b"",
-    ) -> tuple[bytes, bytes]:
+    ) -> bytes:
+        """Read HTTP headers up to and including the blank line.
+
+        Returns the header block *without* the trailing CRLF CRLF.
+        ``readuntil`` reads exactly until the delimiter so there are never
+        any stray body bytes to return — the old ``(headers, body_prefix)``
+        tuple was misleading because body_prefix was always empty.
+        """
         data = prefix + await reader.readuntil(b"\r\n\r\n")
         if len(data) > HEADER_LIMIT:
             raise ValueError("HTTP headers too large")
-        return data[:-4], b""
+        return data[:-4]
 
     def _parse_request(self, header_bytes: bytes) -> tuple[str, dict[str, str]]:
         lines = header_bytes.decode("iso-8859-1").split("\r\n")

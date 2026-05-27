@@ -24,7 +24,7 @@ phases:
 
   - name: "Offline — Airplane Mode"
     duration: "15s"
-    bandwidth: "0"
+    bandwidth: 0
     latency: "3000ms"
     loss: "99%"
 

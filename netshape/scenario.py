@@ -137,7 +137,9 @@ def _parse_phase(index: int, raw: Any) -> Phase:
 
     name = str(raw.get("name") or f"Phase {index + 1}")
 
-    raw_dur = raw.get("duration")
+    # Accept either "duration" (human string e.g. "30s") or "duration_ms"
+    # (pre-parsed integer milliseconds, produced by Phase.to_dict()).
+    raw_dur = raw.get("duration") if "duration" in raw else raw.get("duration_ms")
     if raw_dur is None:
         raise ScenarioError(f"phase {index} ({name!r}) is missing 'duration'")
     try:

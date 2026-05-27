@@ -194,6 +194,22 @@ function updateConfigDisplay(config) {
   els.configDisplay.textContent = JSON.stringify(config, null, 2);
 }
 
+function updateSlidersFromConfig(config) {
+  if (config.bandwidth_bps !== undefined) {
+    els.bwSlider.value = Math.round(config.bandwidth_bps / 1_000_000);
+  }
+  if (config.latency_ms !== undefined) {
+    els.latSlider.value = config.latency_ms;
+  }
+  if (config.loss_pct !== undefined) {
+    els.lossSlider.value = (config.loss_pct * 100).toFixed(1);
+  }
+  if (config.jitter_ms !== undefined) {
+    els.jitterSlider.value = config.jitter_ms;
+  }
+  updateSliderLabels();
+}
+
 function escapeHtml(str) {
   return String(str)
     .replace(/&/g, '&amp;')
@@ -225,10 +241,8 @@ function updateStatus(data) {
   els.ulValue.textContent = fmt(ul);
   els.latValue.textContent = fmt(lat);
   els.lossValue.textContent = `${(loss * 100).toFixed(0)}%`;
-
-  const port = data.traffic_port || 8090;
-  els.proxyStatusDot.className = `status-dot ${data.connected ? 'connected' : ''}`;
-  els.proxyStatusText.textContent = data.connected ? `Connected (port ${port})` : 'Disconnected';
+  // Note: proxy-status-dot / proxy-status-text are managed by setConnectionState(),
+  // not here, so they reflect actual SSE stream state rather than a payload field.
 }
 
 function updateCharts(data) {
@@ -249,16 +263,53 @@ function updateCharts(data) {
   latencyChart.update('none');
 }
 
+// ─── CONNECTION STATE ─────────────────────────────────────────────────────
+// Tracks whether the SSE stream is currently open. The `connected` field in
+// SSE payloads was removed because receiving a message implies the stream is
+// open — this JS variable is the authoritative source of connection truth.
+let sseConnected = false;
+
+function setConnectionState(connected, port) {
+  sseConnected = connected;
+  if (els.proxyStatusDot) {
+    els.proxyStatusDot.className = `status-dot ${connected ? 'connected' : ''}`;
+  }
+  if (els.proxyStatusText) {
+    els.proxyStatusText.textContent = connected
+      ? `Connected (port ${port || 8090})`
+      : 'Disconnected';
+  }
+  if (!connected) {
+    // Reset banner to offline when stream drops
+    els.statusBanner.className = 'status-banner offline';
+    els.statusBanner.textContent = '⚪ OFFLINE — waiting for proxy…';
+  }
+}
+
 // ─── SSE (REAL-TIME UPDATES) ──────────────────────────────────────────────
 function startEventSource() {
   const events = new EventSource('/events');
 
+  events.addEventListener('open', () => {
+    console.log('SSE connected');
+    // Port will be updated on first message; show generic connected state now
+    setConnectionState(true, els._trafficPort || 8090);
+  });
+
   events.addEventListener('message', (event) => {
     try {
       const data = JSON.parse(event.data);
+      // Keep track of the traffic port for reconnection display
+      els._trafficPort = data.traffic_port;
+      setConnectionState(true, data.traffic_port);
       updateStatus(data);
       updateCharts(data);
       if (data.scenario) updateScenarioUI(data.scenario);
+      // Keep Current Config panel and sliders in sync with live config
+      if (data.config) {
+        updateConfigDisplay(data.config);
+        updateSlidersFromConfig(data.config);
+      }
     } catch (err) {
       console.error('Failed to parse SSE data:', err);
     }
@@ -266,12 +317,9 @@ function startEventSource() {
 
   events.addEventListener('error', (err) => {
     console.error('SSE error:', err);
+    setConnectionState(false);
     events.close();
     setTimeout(startEventSource, 3000); // retry after 3s
-  });
-
-  events.addEventListener('open', () => {
-    console.log('SSE connected');
   });
 }
 
@@ -339,6 +387,19 @@ function updateScenarioUI(scenarioData) {
   const running = scenarioData?.running;
   scenarioIdleControls.style.display = running ? 'none' : 'block';
   if (scenarioRunning) scenarioRunning.style.display = running ? 'block' : 'none';
+
+  // Surface server-side errors so they are never silently swallowed
+  if (scenarioData?.error) {
+    if (scenarioStatusMsg) {
+      scenarioStatusMsg.style.color = '#f44336';
+      scenarioStatusMsg.textContent = `Server error: ${scenarioData.error}`;
+    }
+  } else if (scenarioStatusMsg && scenarioStatusMsg.style.color === 'rgb(244, 67, 54)') {
+    // Clear a previous error once the state is healthy again
+    scenarioStatusMsg.style.color = '';
+    scenarioStatusMsg.textContent = '';
+  }
+
   if (!running) return;
 
   if (scenarioNameDisplay) scenarioNameDisplay.textContent = scenarioData.name || '';
@@ -359,29 +420,36 @@ runScenarioBtn?.addEventListener('click', async () => {
   const name = scenarioSelect?.value;
   if (!name) return;
   try {
-    await fetch('/scenario/start', {
+    const res = await fetch('/scenario/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ builtin: name }),
     });
-    if (scenarioStatusMsg) {
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (scenarioStatusMsg) scenarioStatusMsg.textContent = `Error: ${data.error || res.status}`;
+    } else if (scenarioStatusMsg) {
       scenarioStatusMsg.textContent = `Started: ${name}`;
       setTimeout(() => { scenarioStatusMsg.textContent = ''; }, 3000);
     }
   } catch (err) {
-    if (scenarioStatusMsg) scenarioStatusMsg.textContent = 'Failed to start scenario.';
+    if (scenarioStatusMsg) scenarioStatusMsg.textContent = `Failed to start: ${err.message}`;
   }
 });
 
 stopScenarioBtn?.addEventListener('click', async () => {
   try {
-    await fetch('/scenario/stop', { method: 'POST', body: '{}' });
+    const res = await fetch('/scenario/stop', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
     if (scenarioStatusMsg) {
-      scenarioStatusMsg.textContent = 'Scenario stopped.';
+      scenarioStatusMsg.textContent = res.ok ? 'Scenario stopped.' : 'Stop failed.';
       setTimeout(() => { scenarioStatusMsg.textContent = ''; }, 3000);
     }
   } catch (err) {
-    if (scenarioStatusMsg) scenarioStatusMsg.textContent = 'Failed to stop scenario.';
+    if (scenarioStatusMsg) scenarioStatusMsg.textContent = `Failed to stop: ${err.message}`;
   }
 });
 
@@ -390,21 +458,40 @@ stopScenarioBtn?.addEventListener('click', async () => {
   updateSliderLabels();
   loadBuiltinScenarios();
 
-  // Fetch current config
+  // Fetch current config and populate the UI immediately — don't make the user
+  // wait for the first SSE tick to see non-placeholder values.
   try {
     const res = await fetch('/status');
     const config = await res.json();
     updateConfigDisplay(config);
+
     if (config.bandwidth_bps !== undefined) {
+      // Sliders
       els.bwSlider.value = Math.round(config.bandwidth_bps / 1_000_000);
       els.latSlider.value = config.latency_ms || 0;
       els.lossSlider.value = (config.loss_pct || 0) * 100;
       els.jitterSlider.value = config.jitter_ms || 0;
       updateSliderLabels();
+
+      // Populate metric cards with configured values while waiting for SSE
+      const lat = config.latency_ms || 0;
+      const loss = config.loss_pct || 0;
+      els.latValue.textContent = lat.toFixed(1);
+      els.lossValue.textContent = `${(loss * 100).toFixed(0)}%`;
+      // Download/upload will come from SSE (need live traffic data)
+      els.dlValue.textContent = '--';
+      els.ulValue.textContent = '--';
+
+      // Show a "Connecting…" banner while SSE hasn't sent its first frame yet
+      els._trafficPort = config.traffic_port;
+      els.statusBanner.className = 'status-banner normal';
+      els.statusBanner.textContent = '⟳ Connecting…';
     }
   } catch (err) {
     console.error('Failed to fetch config:', err);
     els.configDisplay.textContent = 'Error loading config';
+    els.statusBanner.className = 'status-banner offline';
+    els.statusBanner.textContent = '⚪ OFFLINE — proxy not reachable';
   }
 
   // Start SSE and initial log fetch
