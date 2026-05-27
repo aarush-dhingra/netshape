@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import random
 import time
 from collections.abc import Callable
+
+logger = logging.getLogger("netshape.throttle")
+
+
 
 # Burst window constants.
 #
@@ -67,6 +72,15 @@ class TokenBucket:
         self._clock = clock
         self._tokens = float("inf") if self.rate_bps == 0 else float(self.capacity_bits)
         self._last_refill = self._clock()
+        if self.rate_bps > 0:
+            logger.info(
+                "TokenBucket initialised: rate=%d bps, capacity=%d bits (~%.1f KB), "
+                "tokens=%.0f",
+                self.rate_bps,
+                self.capacity_bits,
+                self.capacity_bits / 8 / 1024,
+                self._tokens,
+            )
 
     @property
     def tokens(self) -> float:
@@ -89,7 +103,14 @@ class TokenBucket:
 
         shortage = bits_needed - self._tokens
         self._tokens = 0.0
-        return shortage / self.rate_bps
+        wait = shortage / self.rate_bps
+        logger.info(
+            "TokenBucket throttled: need=%d bits, have=%.0f, wait=%.4f s",
+            bits_needed,
+            self._tokens,
+            wait,
+        )
+        return wait
 
     def reset_rate(self, rate_bps: int) -> None:
         """Update bandwidth rate while preserving current refill timing."""

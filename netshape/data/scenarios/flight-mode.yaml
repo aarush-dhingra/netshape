@@ -1,0 +1,40 @@
+name: "Flight"
+description: "Airport WiFi → onboard inflight WiFi (high latency) → brief offline → landing and reconnect."
+
+phases:
+  - name: "Airport — Good WiFi"
+    duration: "20s"
+    bandwidth: "20mbps"
+    latency: "15ms"
+    loss: "0%"
+
+  - name: "Boarding — Degrading Signal"
+    duration: "10s"
+    bandwidth: "2mbps"
+    latency: "80ms"
+    loss: "2%"
+    jitter: "30ms"
+
+  - name: "In-Flight WiFi"
+    duration: "40s"
+    bandwidth: "1mbps"
+    latency: "650ms"
+    loss: "1%"
+    jitter: "100ms"
+
+  - name: "Offline — Airplane Mode"
+    duration: "15s"
+    bandwidth: 0
+    latency: "3000ms"
+    loss: "99%"
+
+  - name: "Descent — Signal Returning"
+    duration: "10s"
+    bandwidth: "500kbps"
+    latency: "300ms"
+    loss: "5%"
+    jitter: "80ms"
+
+  - name: "Gate — LTE Restored"
+    duration: "20s"
+    profile: "4g"

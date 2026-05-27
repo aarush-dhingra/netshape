@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NetShape Dashboard</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body>
+  <div class="container">
+    <!-- LEFT COLUMN -->
+    <div class="column left">
+      <div id="status-banner" class="status-banner normal">
+        Offline
+      </div>
+
+      <div class="metric-cards">
+        <div class="metric-card">
+          <div class="metric-label">Download</div>
+          <div id="dl-value" class="metric-value blue">--</div>
+          <div id="dl-unit" class="metric-label">Mbps</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Upload</div>
+          <div id="ul-value" class="metric-value green">--</div>
+          <div id="ul-unit" class="metric-label">Mbps</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Latency</div>
+          <div id="lat-value" class="metric-value orange">--</div>
+          <div class="metric-label">ms</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Loss</div>
+          <div id="loss-value" class="metric-value red">--</div>
+          <div class="metric-label">%</div>
+        </div>
+      </div>
+
+      <div class="chart-container">
+        <canvas id="throughput-chart"></canvas>
+      </div>
+
+      <div class="chart-container">
+        <canvas id="latency-chart"></canvas>
+      </div>
+
+      <div class="panel log-panel">
+        <div class="panel-header">
+          <span class="panel-title">Proxy Log</span>
+          <span id="log-count" class="log-count"></span>
+        </div>
+        <div id="log-viewer" class="log-viewer"></div>
+      </div>
+    </div>
+
+    <!-- RIGHT COLUMN (scrollable) -->
+    <div class="column right">
+
+      <!-- Network Profile -->
+      <div class="panel">
+        <div class="panel-title">Network Profile</div>
+        <div class="form-group">
+          <select id="profile-select">
+            <option value="none">none</option>
+            <option value="3g">3g</option>
+            <option value="edge">edge</option>
+            <option value="satellite">satellite</option>
+            <option value="dsl">dsl</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Manual Controls -->
+      <div class="panel">
+        <div class="panel-title">Controls</div>
+        <div class="form-group">
+          <div class="form-label">
+            <span>Bandwidth</span>
+            <span id="bw-value" class="value">Unlimited</span>
+          </div>
+          <input type="range" id="bw-slider" min="0" max="200" value="0">
+        </div>
+        <div class="form-group">
+          <div class="form-label">
+            <span>Latency</span>
+            <span id="lat-value-control" class="value">0 ms</span>
+          </div>
+          <input type="range" id="lat-slider" min="0" max="1000" value="0">
+        </div>
+        <div class="form-group">
+          <div class="form-label">
+            <span>Loss</span>
+            <span id="loss-value-control" class="value">0 %</span>
+          </div>
+          <input type="range" id="loss-slider" min="0" max="50" step="0.1" value="0">
+        </div>
+        <div class="form-group">
+          <div class="form-label">
+            <span>Jitter</span>
+            <span id="jitter-value-control" class="value">0 ms</span>
+          </div>
+          <input type="range" id="jitter-slider" min="0" max="200" value="0">
+        </div>
+        <button id="apply-btn">Apply Changes</button>
+        <div class="status-indicator">
+          <div id="proxy-status-dot" class="status-dot"></div>
+          <span id="proxy-status-text">Disconnected</span>
+        </div>
+      </div>
+
+      <!-- Current Config (collapsible) -->
+      <details class="panel details-panel">
+        <summary class="panel-title">Current Config</summary>
+        <div id="config-display" class="config-display">Loading...</div>
+      </details>
+
+      <!-- Per-Endpoint Rules -->
+      <div class="panel" id="rules-panel">
+        <div class="panel-header">
+          <span class="panel-title">Per-Endpoint Rules</span>
+          <button id="toggle-rule-form-btn" class="btn-small">+ Add</button>
+        </div>
+        <div id="rules-list">
+          <div class="rules-empty">No rules active.</div>
+        </div>
+
+        <div id="rule-form" class="rule-form" style="display:none">
+          <div class="form-group">
+            <label class="form-label-sm">Pattern (regex)</label>
+            <input type="text" id="rule-pattern-input" class="text-input"
+                   placeholder="e.g. api\.example\.com" />
+          </div>
+          <div class="form-row">
+            <div class="form-group half">
+              <label class="form-label-sm">Bandwidth</label>
+              <div class="input-with-unit">
+                <input type="number" id="rule-bw-input" class="text-input" min="0" placeholder="unlimited" />
+                <span class="unit-label">kbps</span>
+              </div>
+            </div>
+            <div class="form-group half">
+              <label class="form-label-sm">Latency</label>
+              <div class="input-with-unit">
+                <input type="number" id="rule-lat-input" class="text-input" min="0" placeholder="0" />
+                <span class="unit-label">ms</span>
+              </div>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group half">
+              <label class="form-label-sm">Loss</label>
+              <div class="input-with-unit">
+                <input type="number" id="rule-loss-input" class="text-input"
+                       min="0" max="100" step="0.1" placeholder="0" />
+                <span class="unit-label">%</span>
+              </div>
+            </div>
+            <div class="form-group half">
+              <label class="form-label-sm">Jitter</label>
+              <div class="input-with-unit">
+                <input type="number" id="rule-jitter-input" class="text-input" min="0" placeholder="0" />
+                <span class="unit-label">ms</span>
+              </div>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label-sm">Name / Comment</label>
+            <input type="text" id="rule-comment-input" class="text-input" placeholder="e.g. Slow API" />
+          </div>
+          <div class="form-row btn-row">
+            <button id="add-rule-submit-btn">Add Rule</button>
+            <button id="cancel-rule-btn" class="btn-secondary">Cancel</button>
+          </div>
+          <div id="rule-msg" class="msg-line"></div>
+        </div>
+      </div>
+
+      <!-- Scenarios -->
+      <div class="panel" id="scenario-panel">
+        <div class="panel-title">Scenarios</div>
+
+        <!-- Built-in -->
+        <div id="scenario-idle-controls">
+          <div class="form-group">
+            <label class="form-label-sm">Built-in</label>
+            <select id="scenario-select">
+              <option value="">— select —</option>
+            </select>
+          </div>
+          <button id="run-scenario-btn" disabled>Run Built-in</button>
+        </div>
+
+        <!-- Running state -->
+        <div id="scenario-running" style="display:none">
+          <div class="scenario-name" id="scenario-name-display"></div>
+          <div class="scenario-phase" id="scenario-phase-display"></div>
+          <progress id="scenario-progress" class="scenario-progress" value="0" max="100"></progress>
+          <div class="scenario-time" id="scenario-time-display"></div>
+          <button id="stop-scenario-btn" class="btn-danger">Stop Scenario</button>
+        </div>
+
+        <div id="scenario-status-msg" class="msg-line"></div>
+
+        <!-- Custom scenario builder -->
+        <div class="section-divider"></div>
+        <div class="panel-subtitle">Build Custom Scenario</div>
+
+        <div class="form-group">
+          <label class="form-label-sm">Name</label>
+          <input type="text" id="custom-scenario-name" class="text-input" placeholder="My Scenario" />
+        </div>
+
+        <div id="custom-phases-list">
+          <!-- Phase rows injected by JS -->
+        </div>
+
+        <div class="form-row btn-row" style="margin-top:8px">
+          <button id="add-phase-btn" class="btn-secondary">+ Phase</button>
+          <button id="run-custom-btn">▶ Run</button>
+        </div>
+        <div id="custom-scenario-msg" class="msg-line"></div>
+      </div>
+
+    </div><!-- /right -->
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="/dashboard/app.js"></script>
+</body>
+</html>
