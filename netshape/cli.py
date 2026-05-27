@@ -202,7 +202,7 @@ def profiles_command() -> None:
     for profile in list_builtin_profiles():
         typer.echo(
             f"{profile.name}: "
-            f"{profile.bandwidth_bps}bps, "
+            f"{_format_bps(profile.bandwidth_bps)}, "
             f"{profile.latency_ms}ms latency, "
             f"{profile.loss_pct * 100:g}% loss, "
             f"{profile.jitter_ms}ms jitter"
@@ -276,7 +276,7 @@ def rule_list(json_output: bool = typer.Option(False, "--json", help="Print raw 
     for rule in rules:
         parts = [f"{rule['id'][:8]}  pattern={rule['pattern']!r}"]
         if rule.get("bandwidth_bps") is not None:
-            parts.append(f"bw={rule['bandwidth_bps']}bps")
+            parts.append(f"bw={_format_bps(int(rule['bandwidth_bps']))}")
         if rule.get("latency_ms") is not None:
             parts.append(f"lat={rule['latency_ms']}ms")
         if rule.get("loss_pct") is not None:
@@ -451,9 +451,7 @@ def _make_watch_table(payload: dict) -> "Table":
     if not active:
         return t
 
-    bw = payload.get("bandwidth_bps", 0)
-    bw_str = "Unlimited" if bw == 0 else f"{bw:,} bps"
-    t.add_row("Bandwidth", bw_str)
+    t.add_row("Bandwidth", _format_bps(int(payload.get("bandwidth_bps", 0) or 0)))
     t.add_row("Latency", f"{payload.get('latency_ms', 0)} ms")
     t.add_row("Loss", f"{float(payload.get('loss_pct', 0)) * 100:g}%")
     t.add_row("Jitter", f"{payload.get('jitter_ms', 0)} ms")
@@ -500,11 +498,25 @@ def _setup_json_log_file(path: Path) -> None:
     root.setLevel(logging.DEBUG)
 
 
+def _format_bps(bps: int) -> str:
+    """Return a human-readable bandwidth string."""
+    if bps == 0:
+        return "Unlimited"
+    if bps >= 1_000_000:
+        val = bps / 1_000_000
+        return f"{val:.1f} Mbps" if val != int(val) else f"{int(val)} Mbps"
+    if bps >= 1_000:
+        val = bps / 1_000
+        return f"{val:.1f} kbps" if val != int(val) else f"{int(val)} kbps"
+    return f"{bps} bps"
+
+
 def _format_config(config: dict[str, object]) -> str:
     profile = config.get("profile") or "custom"
+    bw = int(config.get("bandwidth_bps", 0) or 0)
     return (
         f"Profile: {profile}\n"
-        f"Bandwidth: {config.get('bandwidth_bps', 0)} bps\n"
+        f"Bandwidth: {_format_bps(bw)}\n"
         f"Latency: {config.get('latency_ms', 0)} ms\n"
         f"Loss: {float(config.get('loss_pct', 0.0)) * 100:g}%\n"
         f"Jitter: {config.get('jitter_ms', 0)} ms"

@@ -174,7 +174,12 @@ class ThrottledProxy:
         self._log_handler.setFormatter(
             logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATE_FORMAT)
         )
-        logging.getLogger("netshape").addHandler(self._log_handler)
+        _nsl = logging.getLogger("netshape")
+        _nsl.addHandler(self._log_handler)
+        # Ensure INFO-level messages reach the dashboard log buffer even when the
+        # root logger defaults to WARNING (which is Python's default).
+        if _nsl.level == logging.NOTSET or _nsl.level > logging.INFO:
+            _nsl.setLevel(logging.INFO)
         # Per-endpoint throttle rules
         self._rules: list[ThrottleRule] = []
         self._rule_buckets: dict[str, TokenBucket] = {}

@@ -76,7 +76,7 @@ def test_adjust_command_delegates_to_core(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert captured["bandwidth"] == "100kbps"
-    assert "Bandwidth: 100000 bps" in result.output
+    assert "Bandwidth: 100 kbps" in result.output
 
 
 def test_status_command_prints_inactive(monkeypatch) -> None:

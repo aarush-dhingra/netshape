@@ -24,6 +24,30 @@ from .units import parse_bandwidth, parse_duration_ms, parse_jitter, parse_laten
 
 DEFAULT_TRAFFIC_PORT = 8090
 DEFAULT_STATE_PATH = Path.home() / ".netshape" / "state.json"
+_NETSHAPE_DIR = Path.home() / ".netshape"
+_RULES_FILE = _NETSHAPE_DIR / "rules.json"
+
+
+def _load_persisted_rules() -> list[dict[str, Any]]:
+    """Load rules saved from a previous session, if any."""
+    try:
+        if _RULES_FILE.exists():
+            data = json.loads(_RULES_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return data
+    except Exception:
+        pass
+    return []
+
+
+def _save_persisted_rules(rules: list[dict[str, Any]]) -> None:
+    """Persist the current rule set (without server-assigned IDs) to disk."""
+    try:
+        _NETSHAPE_DIR.mkdir(parents=True, exist_ok=True)
+        clean = [{k: v for k, v in r.items() if k != "id"} for r in rules]
+        _RULES_FILE.write_text(json.dumps(clean, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 
 class SessionError(RuntimeError):
@@ -150,6 +174,13 @@ def run_session(
         jitter_ms=settings.jitter_ms,
     )
     write_state(state, state_path)
+
+    # Restore rules saved from the previous session (best-effort).
+    for rule_dict in _load_persisted_rules():
+        try:
+            _post_json(state.control_port, "/rules", rule_dict)
+        except Exception:
+            pass
 
     env = _proxy_env(os.environ.copy(), proxy.traffic_port)
     process = subprocess.Popen(command, env=env, shell=(sys.platform == "win32"))
@@ -397,26 +428,52 @@ def add_rule(
         payload["jitter_ms"] = parse_duration_ms(jitter, kind="jitter")
     if loss is not None:
         payload["loss_pct"] = parse_loss(loss)
-    return _post_json(state.control_port, "/rules", payload)
+    result = _post_json(state.control_port, "/rules", payload)
+    # Persist so rules survive across sessions.
+    try:
+        _save_persisted_rules(_get_json(state.control_port, "/rules").get("rules", []))
+    except Exception:
+        pass
+    return result
 
 
 def remove_rule(rule_id: str, *, state_path: Path = DEFAULT_STATE_PATH) -> dict[str, Any]:
-    """Remove a rule by id from the running session."""
+    """Remove a rule by id prefix OR by comment/name from the running session."""
     state = read_state(state_path)
     if state is None:
         raise SessionError("no active NetShape session")
+
+    # Resolve comment/name → id if the caller passed a name rather than an id.
+    resolved = rule_id
+    try:
+        rules = _get_json(state.control_port, "/rules").get("rules", [])
+        # Exact comment match (case-insensitive) takes priority over id prefix.
+        for r in rules:
+            if r.get("comment", "").lower() == rule_id.lower():
+                resolved = r["id"]
+                break
+    except Exception:
+        pass
+
     conn = __import__("http.client", fromlist=["HTTPConnection"]).HTTPConnection(
         "127.0.0.1", state.control_port, timeout=5
     )
     try:
-        conn.request("DELETE", f"/rules/{rule_id}")
+        conn.request("DELETE", f"/rules/{resolved}")
         response = conn.getresponse()
         data = response.read()
         if response.status >= 400:
             raise SessionError(data.decode("utf-8") or f"HTTP {response.status}")
-        return json.loads(data.decode("utf-8") or "{}")
+        result = json.loads(data.decode("utf-8") or "{}")
     finally:
         conn.close()
+
+    # Persist updated list.
+    try:
+        _save_persisted_rules(_get_json(state.control_port, "/rules").get("rules", []))
+    except Exception:
+        pass
+    return result
 
 
 def list_rules(*, state_path: Path = DEFAULT_STATE_PATH) -> list[dict[str, Any]]:

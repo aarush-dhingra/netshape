@@ -6,9 +6,9 @@ const UPDATE_INTERVAL_MS = 1000;
 const throughputCtx = document.getElementById('throughput-chart')?.getContext('2d');
 const latencyCtx = document.getElementById('latency-chart')?.getContext('2d');
 
-const labels = Array.from({ length: HISTORY_POINTS }, (_, i) => {
-  return `${(HISTORY_POINTS - i) * (UPDATE_INTERVAL_MS / 1000)}s`;
-});
+const labels = Array.from({ length: HISTORY_POINTS }, (_, i) =>
+  `${(HISTORY_POINTS - i) * (UPDATE_INTERVAL_MS / 1000)}s`
+);
 
 let throughputChart, latencyChart;
 
@@ -54,11 +54,7 @@ if (throughputCtx) {
           ticks: { color: '#a0a0a0', maxTicksLimit: 6 },
         },
       },
-      plugins: {
-        legend: {
-          labels: { color: '#e0e0e0' },
-        },
-      },
+      plugins: { legend: { labels: { color: '#e0e0e0' } } },
     },
   });
 }
@@ -96,20 +92,48 @@ if (latencyCtx) {
           ticks: { color: '#a0a0a0', maxTicksLimit: 6 },
         },
       },
-      plugins: {
-        legend: {
-          labels: { color: '#e0e0e0' },
-        },
-      },
+      plugins: { legend: { labels: { color: '#e0e0e0' } } },
     },
   });
+}
+
+// ─── UNIT HELPERS ─────────────────────────────────────────────────────────
+/**
+ * Convert Mbps to a human-readable {value, unit} pair for metric cards.
+ * Input is the raw SSE `download_mbps` / `upload_mbps` value.
+ */
+function formatBandwidth(mbps) {
+  if (mbps === null || mbps === undefined) return { value: '--', unit: 'Mbps' };
+  if (mbps >= 1000) return { value: (mbps / 1000).toFixed(2), unit: 'Gbps' };
+  if (mbps >= 1.0)  return { value: mbps.toFixed(1), unit: 'Mbps' };
+  if (mbps >= 0.001) return { value: (mbps * 1000).toFixed(1), unit: 'kbps' };
+  if (mbps > 0) return { value: (mbps * 1_000_000).toFixed(0), unit: 'bps' };
+  return { value: '0.0', unit: 'Mbps' };
+}
+
+/**
+ * Convert a raw bps integer to a human-readable string (for rule lists, etc).
+ */
+function formatBps(bps) {
+  if (!bps) return 'Unlimited';
+  if (bps >= 1_000_000) {
+    const v = bps / 1_000_000;
+    return `${Number.isInteger(v) ? v : v.toFixed(1)} Mbps`;
+  }
+  if (bps >= 1_000) {
+    const v = bps / 1_000;
+    return `${Number.isInteger(v) ? v : v.toFixed(1)} kbps`;
+  }
+  return `${bps} bps`;
 }
 
 // ─── UI STATE ──────────────────────────────────────────────────────────────
 const els = {
   statusBanner: document.getElementById('status-banner'),
   dlValue: document.getElementById('dl-value'),
+  dlUnit: document.getElementById('dl-unit'),
   ulValue: document.getElementById('ul-value'),
+  ulUnit: document.getElementById('ul-unit'),
   latValue: document.getElementById('lat-value'),
   lossValue: document.getElementById('loss-value'),
   profileSelect: document.getElementById('profile-select'),
@@ -128,11 +152,11 @@ const els = {
 };
 
 const profiles = {
-  none: { bandwidth_bps: 0, latency_ms: 0, loss_pct: 0, jitter_ms: 0 },
-  '3g': { bandwidth_bps: 1500000, latency_ms: 100, loss_pct: 0.01, jitter_ms: 20 },
-  edge: { bandwidth_bps: 250000, latency_ms: 300, loss_pct: 0.02, jitter_ms: 50 },
+  none:      { bandwidth_bps: 0,       latency_ms: 0,   loss_pct: 0,     jitter_ms: 0  },
+  '3g':      { bandwidth_bps: 1500000, latency_ms: 100, loss_pct: 0.01,  jitter_ms: 20 },
+  edge:      { bandwidth_bps: 250000,  latency_ms: 300, loss_pct: 0.02,  jitter_ms: 50 },
   satellite: { bandwidth_bps: 5000000, latency_ms: 650, loss_pct: 0.005, jitter_ms: 80 },
-  dsl: { bandwidth_bps: 5000000, latency_ms: 30, loss_pct: 0.001, jitter_ms: 5 },
+  dsl:       { bandwidth_bps: 5000000, latency_ms: 30,  loss_pct: 0.001, jitter_ms: 5  },
 };
 
 function bpsToMbps(bps) {
@@ -160,7 +184,7 @@ function setSlidersFromProfile(profileName) {
   updateSliderLabels();
 }
 
-// ─── EVENT LISTENERS ───────────────────────────────────────────────────────
+// ─── SLIDER EVENT LISTENERS ───────────────────────────────────────────────
 els.profileSelect.addEventListener('change', () => {
   setSlidersFromProfile(els.profileSelect.value);
 });
@@ -191,22 +215,16 @@ els.applyBtn.addEventListener('click', async () => {
 
 // ─── UPDATE UI ────────────────────────────────────────────────────────────
 function updateConfigDisplay(config) {
-  els.configDisplay.textContent = JSON.stringify(config, null, 2);
+  if (els.configDisplay) els.configDisplay.textContent = JSON.stringify(config, null, 2);
 }
 
 function updateSlidersFromConfig(config) {
   if (config.bandwidth_bps !== undefined) {
     els.bwSlider.value = Math.round(config.bandwidth_bps / 1_000_000);
   }
-  if (config.latency_ms !== undefined) {
-    els.latSlider.value = config.latency_ms;
-  }
-  if (config.loss_pct !== undefined) {
-    els.lossSlider.value = (config.loss_pct * 100).toFixed(1);
-  }
-  if (config.jitter_ms !== undefined) {
-    els.jitterSlider.value = config.jitter_ms;
-  }
+  if (config.latency_ms !== undefined) els.latSlider.value = config.latency_ms;
+  if (config.loss_pct !== undefined) els.lossSlider.value = (config.loss_pct * 100).toFixed(1);
+  if (config.jitter_ms !== undefined) els.jitterSlider.value = config.jitter_ms;
   updateSliderLabels();
 }
 
@@ -217,9 +235,16 @@ function escapeHtml(str) {
     .replace(/>/g, '&gt;');
 }
 
+function logLineClass(line) {
+  if (line.includes(' ERROR ')) return 'log-line log-error';
+  if (line.includes(' WARN  ') || line.includes(' WARNING ')) return 'log-line log-warn';
+  if (line.includes(' INFO  ')) return 'log-line log-info';
+  if (line.includes(' DEBUG ')) return 'log-line log-debug';
+  return 'log-line';
+}
+
 function updateStatus(data) {
   const classification = data.classification || 'OFFLINE';
-
   els.statusBanner.className = 'status-banner';
   if (classification === 'NORMAL') els.statusBanner.classList.add('normal');
   else if (classification === 'SLOW') els.statusBanner.classList.add('slow');
@@ -227,27 +252,31 @@ function updateStatus(data) {
   else if (classification === 'SEVERE') els.statusBanner.classList.add('severe');
   else els.statusBanner.classList.add('offline');
 
-  const fmt = (n) => n !== null && n !== undefined ? n.toFixed(1) : '--';
   const dl = data.download_mbps;
   const ul = data.upload_mbps;
   const lat = data.latency_ms;
   const loss = data.loss_pct;
 
+  const dlFmt = dl !== null && dl !== undefined ? formatBandwidth(dl) : { value: '--', unit: 'Mbps' };
+  const ulFmt = ul !== null && ul !== undefined ? formatBandwidth(ul) : { value: '--', unit: 'Mbps' };
+
+  els.dlValue.textContent = dlFmt.value;
+  if (els.dlUnit) els.dlUnit.textContent = dlFmt.unit;
+  els.ulValue.textContent = ulFmt.value;
+  if (els.ulUnit) els.ulUnit.textContent = ulFmt.unit;
+  els.latValue.textContent = lat !== null && lat !== undefined ? lat.toFixed(1) : '--';
+  els.lossValue.textContent = loss !== null && loss !== undefined ? `${(loss * 100).toFixed(0)}%` : '--';
+
   const emojiMap = { NORMAL: '🟢', SLOW: '🟡', POOR: '🟠', SEVERE: '🔴', OFFLINE: '⚪' };
   const emoji = emojiMap[classification] || '⚪';
-
-  els.statusBanner.textContent = `${emoji} ${classification} — DL ${fmt(dl)} Mbps, UL ${fmt(ul)} Mbps, ${fmt(lat)} ms`;
-  els.dlValue.textContent = fmt(dl);
-  els.ulValue.textContent = fmt(ul);
-  els.latValue.textContent = fmt(lat);
-  els.lossValue.textContent = `${(loss * 100).toFixed(0)}%`;
-  // Note: proxy-status-dot / proxy-status-text are managed by setConnectionState(),
-  // not here, so they reflect actual SSE stream state rather than a payload field.
+  const dlStr = dlFmt.value !== '--' ? `DL ${dlFmt.value} ${dlFmt.unit}` : 'DL --';
+  const ulStr = ulFmt.value !== '--' ? `UL ${ulFmt.value} ${ulFmt.unit}` : 'UL --';
+  const latStr = lat !== null && lat !== undefined ? `${lat.toFixed(1)} ms` : '--';
+  els.statusBanner.textContent = `${emoji} ${classification} — ${dlStr}, ${ulStr}, ${latStr}`;
 }
 
 function updateCharts(data) {
   if (!throughputChart || !latencyChart) return;
-
   const dl = data.download_mbps !== null ? data.download_mbps : null;
   const ul = data.upload_mbps !== null ? data.upload_mbps : null;
   const lat = data.latency_ms !== null ? data.latency_ms : null;
@@ -264,9 +293,6 @@ function updateCharts(data) {
 }
 
 // ─── CONNECTION STATE ─────────────────────────────────────────────────────
-// Tracks whether the SSE stream is currently open. The `connected` field in
-// SSE payloads was removed because receiving a message implies the stream is
-// open — this JS variable is the authoritative source of connection truth.
 let sseConnected = false;
 
 function setConnectionState(connected, port) {
@@ -280,7 +306,6 @@ function setConnectionState(connected, port) {
       : 'Disconnected';
   }
   if (!connected) {
-    // Reset banner to offline when stream drops
     els.statusBanner.className = 'status-banner offline';
     els.statusBanner.textContent = '⚪ OFFLINE — waiting for proxy…';
   }
@@ -291,21 +316,17 @@ function startEventSource() {
   const events = new EventSource('/events');
 
   events.addEventListener('open', () => {
-    console.log('SSE connected');
-    // Port will be updated on first message; show generic connected state now
     setConnectionState(true, els._trafficPort || 8090);
   });
 
   events.addEventListener('message', (event) => {
     try {
       const data = JSON.parse(event.data);
-      // Keep track of the traffic port for reconnection display
       els._trafficPort = data.traffic_port;
       setConnectionState(true, data.traffic_port);
       updateStatus(data);
       updateCharts(data);
       if (data.scenario) updateScenarioUI(data.scenario);
-      // Keep Current Config panel and sliders in sync with live config
       if (data.config) {
         updateConfigDisplay(data.config);
         updateSlidersFromConfig(data.config);
@@ -315,11 +336,10 @@ function startEventSource() {
     }
   });
 
-  events.addEventListener('error', (err) => {
-    console.error('SSE error:', err);
+  events.addEventListener('error', () => {
     setConnectionState(false);
     events.close();
-    setTimeout(startEventSource, 3000); // retry after 3s
+    setTimeout(startEventSource, 3000);
   });
 }
 
@@ -334,25 +354,22 @@ async function refreshLogs() {
     const data = await res.json();
     if (!logViewer || !data.lines) return;
 
-    const lines = data.lines.slice(-80);
-    const wasScrolledToBottom =
-      logViewer.scrollHeight - logViewer.scrollTop <= logViewer.clientHeight + 20;
+    const lines = data.lines.slice(-100);
+    const wasAtBottom =
+      logViewer.scrollHeight - logViewer.scrollTop <= logViewer.clientHeight + 24;
 
     logViewer.innerHTML = lines
-      .map(l => `<div class="log-line">${escapeHtml(l)}</div>`)
+      .map(l => `<div class="${logLineClass(l)}">${escapeHtml(l)}</div>`)
       .join('');
 
     if (logCount) logCount.textContent = `${data.lines.length} lines`;
-
-    if (wasScrolledToBottom) {
-      logViewer.scrollTop = logViewer.scrollHeight;
-    }
+    if (wasAtBottom) logViewer.scrollTop = logViewer.scrollHeight;
   } catch (_) {
     // silent — proxy may not be ready yet
   }
 }
 
-setInterval(refreshLogs, 3000);
+setInterval(refreshLogs, 2000);
 
 // ─── SCENARIO ─────────────────────────────────────────────────────────────
 const scenarioSelect = document.getElementById('scenario-select');
@@ -388,20 +405,17 @@ function updateScenarioUI(scenarioData) {
   scenarioIdleControls.style.display = running ? 'none' : 'block';
   if (scenarioRunning) scenarioRunning.style.display = running ? 'block' : 'none';
 
-  // Surface server-side errors so they are never silently swallowed
   if (scenarioData?.error) {
     if (scenarioStatusMsg) {
       scenarioStatusMsg.style.color = '#f44336';
       scenarioStatusMsg.textContent = `Server error: ${scenarioData.error}`;
     }
   } else if (scenarioStatusMsg && scenarioStatusMsg.style.color === 'rgb(244, 67, 54)') {
-    // Clear a previous error once the state is healthy again
     scenarioStatusMsg.style.color = '';
     scenarioStatusMsg.textContent = '';
   }
 
   if (!running) return;
-
   if (scenarioNameDisplay) scenarioNameDisplay.textContent = scenarioData.name || '';
   if (scenarioPhaseDisplay) {
     scenarioPhaseDisplay.textContent =
@@ -433,7 +447,7 @@ runScenarioBtn?.addEventListener('click', async () => {
       setTimeout(() => { scenarioStatusMsg.textContent = ''; }, 3000);
     }
   } catch (err) {
-    if (scenarioStatusMsg) scenarioStatusMsg.textContent = `Failed to start: ${err.message}`;
+    if (scenarioStatusMsg) scenarioStatusMsg.textContent = `Failed: ${err.message}`;
   }
 });
 
@@ -449,7 +463,243 @@ stopScenarioBtn?.addEventListener('click', async () => {
       setTimeout(() => { scenarioStatusMsg.textContent = ''; }, 3000);
     }
   } catch (err) {
-    if (scenarioStatusMsg) scenarioStatusMsg.textContent = `Failed to stop: ${err.message}`;
+    if (scenarioStatusMsg) scenarioStatusMsg.textContent = `Failed: ${err.message}`;
+  }
+});
+
+// ─── CUSTOM SCENARIO BUILDER ──────────────────────────────────────────────
+let phaseCount = 0;
+
+function addPhaseRow() {
+  phaseCount++;
+  const idx = phaseCount;
+  const div = document.createElement('div');
+  div.className = 'phase-row';
+  div.dataset.phaseIdx = idx;
+  div.innerHTML = `
+    <div class="phase-row-header">
+      <span class="phase-label">Phase ${idx}</span>
+      <button class="btn-icon remove-phase-btn" title="Remove phase">×</button>
+    </div>
+    <div class="form-row">
+      <div class="form-group half">
+        <label class="form-label-sm">Name</label>
+        <input type="text" class="text-input phase-name" placeholder="Phase ${idx}" />
+      </div>
+      <div class="form-group half">
+        <label class="form-label-sm">Duration</label>
+        <div class="input-with-unit">
+          <input type="number" class="text-input phase-duration" min="1" value="10" />
+          <span class="unit-label">s</span>
+        </div>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group half">
+        <label class="form-label-sm">Bandwidth</label>
+        <div class="input-with-unit">
+          <input type="number" class="text-input phase-bw" min="0" placeholder="unlimited" />
+          <span class="unit-label">kbps</span>
+        </div>
+      </div>
+      <div class="form-group half">
+        <label class="form-label-sm">Latency</label>
+        <div class="input-with-unit">
+          <input type="number" class="text-input phase-lat" min="0" placeholder="0" />
+          <span class="unit-label">ms</span>
+        </div>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group half">
+        <label class="form-label-sm">Loss</label>
+        <div class="input-with-unit">
+          <input type="number" class="text-input phase-loss" min="0" max="100" step="0.1" placeholder="0" />
+          <span class="unit-label">%</span>
+        </div>
+      </div>
+      <div class="form-group half">
+        <label class="form-label-sm">Jitter</label>
+        <div class="input-with-unit">
+          <input type="number" class="text-input phase-jitter" min="0" placeholder="0" />
+          <span class="unit-label">ms</span>
+        </div>
+      </div>
+    </div>`;
+  div.querySelector('.remove-phase-btn').addEventListener('click', () => div.remove());
+  document.getElementById('custom-phases-list').appendChild(div);
+}
+
+document.getElementById('add-phase-btn')?.addEventListener('click', addPhaseRow);
+
+document.getElementById('run-custom-btn')?.addEventListener('click', async () => {
+  const customMsg = document.getElementById('custom-scenario-msg');
+  const name = document.getElementById('custom-scenario-name')?.value.trim() || 'Custom Scenario';
+  const rows = document.querySelectorAll('#custom-phases-list .phase-row');
+
+  if (rows.length === 0) {
+    if (customMsg) { customMsg.style.color = '#f44336'; customMsg.textContent = 'Add at least one phase.'; }
+    return;
+  }
+
+  const phases = [...rows].map((row, i) => {
+    const phaseName = row.querySelector('.phase-name')?.value.trim() || `Phase ${i + 1}`;
+    const durSec = parseInt(row.querySelector('.phase-duration')?.value || '10', 10);
+    const bwKbps = parseFloat(row.querySelector('.phase-bw')?.value || '0');
+    const latMs = parseInt(row.querySelector('.phase-lat')?.value || '0', 10);
+    const lossPct = parseFloat(row.querySelector('.phase-loss')?.value || '0');
+    const jitterMs = parseInt(row.querySelector('.phase-jitter')?.value || '0', 10);
+
+    const phase = {
+      name: phaseName,
+      duration_ms: durSec * 1000,
+    };
+    if (bwKbps > 0) phase.bandwidth_bps = Math.round(bwKbps * 1000);
+    if (latMs > 0) phase.latency_ms = latMs;
+    if (lossPct > 0) phase.loss_pct = lossPct / 100;
+    if (jitterMs > 0) phase.jitter_ms = jitterMs;
+    return phase;
+  });
+
+  try {
+    const res = await fetch('/scenario/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, phases }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (customMsg) { customMsg.style.color = '#f44336'; customMsg.textContent = `Error: ${data.error || res.status}`; }
+    } else {
+      if (customMsg) { customMsg.style.color = '#81c784'; customMsg.textContent = `Started: ${name}`; }
+      setTimeout(() => { if (customMsg) customMsg.textContent = ''; }, 4000);
+    }
+  } catch (err) {
+    if (customMsg) { customMsg.style.color = '#f44336'; customMsg.textContent = `Failed: ${err.message}`; }
+  }
+});
+
+// ─── RULES MANAGEMENT ────────────────────────────────────────────────────
+async function refreshRules() {
+  try {
+    const res = await fetch('/rules');
+    if (!res.ok) return;
+    const data = await res.json();
+    renderRulesList(data.rules || []);
+  } catch (_) {}
+}
+
+function renderRulesList(rules) {
+  const container = document.getElementById('rules-list');
+  if (!container) return;
+
+  if (rules.length === 0) {
+    container.innerHTML = '<div class="rules-empty">No rules active.</div>';
+    return;
+  }
+
+  container.innerHTML = rules.map(r => {
+    const parts = [];
+    if (r.bandwidth_bps != null) parts.push(`bw: ${formatBps(r.bandwidth_bps)}`);
+    if (r.latency_ms != null)    parts.push(`lat: ${r.latency_ms}ms`);
+    if (r.loss_pct != null)      parts.push(`loss: ${(r.loss_pct * 100).toFixed(1)}%`);
+    if (r.jitter_ms != null)     parts.push(`jitter: ${r.jitter_ms}ms`);
+    const label = r.comment || r.pattern;
+    const detail = parts.length ? parts.join(' · ') : 'no throttle overrides';
+    return `
+      <div class="rule-row" data-id="${escapeHtml(r.id)}">
+        <div class="rule-info">
+          <div class="rule-name">${escapeHtml(label)}</div>
+          <div class="rule-pattern">${escapeHtml(r.pattern)}</div>
+          <div class="rule-detail">${escapeHtml(detail)}</div>
+        </div>
+        <button class="btn-icon rule-remove-btn" title="Remove rule" data-id="${escapeHtml(r.id)}">×</button>
+      </div>`;
+  }).join('');
+
+  container.querySelectorAll('.rule-remove-btn').forEach(btn => {
+    btn.addEventListener('click', () => removeRule(btn.dataset.id));
+  });
+}
+
+async function removeRule(ruleId) {
+  try {
+    const res = await fetch(`/rules/${encodeURIComponent(ruleId)}`, { method: 'DELETE' });
+    if (res.ok) {
+      await refreshRules();
+    } else {
+      const data = await res.json().catch(() => ({}));
+      showRuleMsg(`Error: ${data.error || res.status}`, true);
+    }
+  } catch (err) {
+    showRuleMsg(`Failed: ${err.message}`, true);
+  }
+}
+
+function showRuleMsg(text, isError = false) {
+  const el = document.getElementById('rule-msg');
+  if (!el) return;
+  el.style.color = isError ? '#f44336' : '#81c784';
+  el.textContent = text;
+  setTimeout(() => { el.textContent = ''; }, 4000);
+}
+
+// Rule form toggle
+document.getElementById('toggle-rule-form-btn')?.addEventListener('click', () => {
+  const form = document.getElementById('rule-form');
+  if (!form) return;
+  const visible = form.style.display !== 'none';
+  form.style.display = visible ? 'none' : 'block';
+  document.getElementById('toggle-rule-form-btn').textContent = visible ? '+ Add' : '– Close';
+});
+
+document.getElementById('cancel-rule-btn')?.addEventListener('click', () => {
+  const form = document.getElementById('rule-form');
+  if (form) form.style.display = 'none';
+  document.getElementById('toggle-rule-form-btn').textContent = '+ Add';
+});
+
+document.getElementById('add-rule-submit-btn')?.addEventListener('click', async () => {
+  const pattern = document.getElementById('rule-pattern-input')?.value.trim();
+  if (!pattern) { showRuleMsg('Pattern is required.', true); return; }
+
+  const bwKbps  = parseFloat(document.getElementById('rule-bw-input')?.value || '0');
+  const latMs   = parseInt(document.getElementById('rule-lat-input')?.value || '0', 10);
+  const lossPct = parseFloat(document.getElementById('rule-loss-input')?.value || '0');
+  const jitterMs = parseInt(document.getElementById('rule-jitter-input')?.value || '0', 10);
+  const comment = document.getElementById('rule-comment-input')?.value.trim() || '';
+
+  const payload = { pattern, comment };
+  if (bwKbps > 0)   payload.bandwidth_bps = Math.round(bwKbps * 1000);
+  if (latMs > 0)    payload.latency_ms = latMs;
+  if (lossPct > 0)  payload.loss_pct = lossPct / 100;
+  if (jitterMs > 0) payload.jitter_ms = jitterMs;
+
+  try {
+    const res = await fetch('/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showRuleMsg(`Error: ${data.error || res.status}`, true);
+    } else {
+      showRuleMsg('Rule added.');
+      // Clear form
+      ['rule-pattern-input', 'rule-bw-input', 'rule-lat-input',
+       'rule-loss-input', 'rule-jitter-input', 'rule-comment-input'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+      });
+      // Collapse form
+      const form = document.getElementById('rule-form');
+      if (form) form.style.display = 'none';
+      document.getElementById('toggle-rule-form-btn').textContent = '+ Add';
+      await refreshRules();
+    }
+  } catch (err) {
+    showRuleMsg(`Failed: ${err.message}`, true);
   }
 });
 
@@ -457,44 +707,39 @@ stopScenarioBtn?.addEventListener('click', async () => {
 (async function init() {
   updateSliderLabels();
   loadBuiltinScenarios();
+  refreshRules();
+  setInterval(refreshRules, 5000);
 
-  // Fetch current config and populate the UI immediately — don't make the user
-  // wait for the first SSE tick to see non-placeholder values.
   try {
     const res = await fetch('/status');
     const config = await res.json();
     updateConfigDisplay(config);
 
     if (config.bandwidth_bps !== undefined) {
-      // Sliders
       els.bwSlider.value = Math.round(config.bandwidth_bps / 1_000_000);
       els.latSlider.value = config.latency_ms || 0;
       els.lossSlider.value = (config.loss_pct || 0) * 100;
       els.jitterSlider.value = config.jitter_ms || 0;
       updateSliderLabels();
 
-      // Populate metric cards with configured values while waiting for SSE
       const lat = config.latency_ms || 0;
       const loss = config.loss_pct || 0;
       els.latValue.textContent = lat.toFixed(1);
       els.lossValue.textContent = `${(loss * 100).toFixed(0)}%`;
-      // Download/upload will come from SSE (need live traffic data)
       els.dlValue.textContent = '--';
       els.ulValue.textContent = '--';
 
-      // Show a "Connecting…" banner while SSE hasn't sent its first frame yet
       els._trafficPort = config.traffic_port;
       els.statusBanner.className = 'status-banner normal';
       els.statusBanner.textContent = '⟳ Connecting…';
     }
   } catch (err) {
     console.error('Failed to fetch config:', err);
-    els.configDisplay.textContent = 'Error loading config';
+    if (els.configDisplay) els.configDisplay.textContent = 'Error loading config';
     els.statusBanner.className = 'status-banner offline';
     els.statusBanner.textContent = '⚪ OFFLINE — proxy not reachable';
   }
 
-  // Start SSE and initial log fetch
   startEventSource();
   refreshLogs();
 })();
