@@ -1,118 +1,186 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>NetShape Test App</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NetShape Network Traffic Lab</title>
   <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
-  <div class="container">
-    <!-- LEFT COLUMN -->
-    <div class="column">
-      <div id="status-banner" class="status-banner normal">
-        Initializing...
-      </div>
+  <div class="app-container">
+    <!-- LEFT: Test suite cards -->
+    <main class="test-column">
+      <h1 class="app-title">Network Traffic Lab</h1>
 
-      <div class="metric-cards">
-        <div class="metric-card">
-          <div class="metric-label">Download</div>
-          <div id="dl-value" class="metric-value blue">--</div>
-          <div class="metric-label">Mbps</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-label">Upload</div>
-          <div id="ul-value" class="metric-value green">--</div>
-          <div class="metric-label">Mbps</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-label">Latency</div>
-          <div id="lat-value" class="metric-value orange">--</div>
-          <div class="metric-label">ms</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-label">Loss</div>
-          <div id="loss-value" class="metric-value red">--</div>
-          <div class="metric-label">%</div>
-        </div>
-      </div>
-
-      <div class="chart-container">
-        <canvas id="throughput-chart"></canvas>
-      </div>
-
-      <div class="chart-container">
-        <canvas id="latency-chart"></canvas>
-      </div>
-    </div>
-
-    <!-- RIGHT COLUMN -->
-    <div class="column">
-      <div class="panel">
-        <div class="panel-title">Network Profile</div>
-        <div class="form-group">
-          <select id="profile-select">
-            <option value="none">none</option>
-            <option value="3g">3g</option>
-            <option value="edge">edge</option>
-            <option value="satellite">satellite</option>
-            <option value="dsl">dsl</option>
-          </select>
-        </div>
-      </div>
-
-      <div class="panel">
-        <div class="panel-title">NetShape Controls</div>
-
-        <div class="form-group">
-          <div class="form-label">
-            <span>Bandwidth</span>
-            <span id="bw-value" class="value">0 Mbps</span>
+      <!-- Card 1: Latency Ping Fire -->
+      <div class="test-card" data-suite="latency">
+        <div class="card-header">
+          <div class="card-meta">
+            <h2>1. Latency Ping Fire</h2>
+            <p>5 sequential GET requests to httpbin.org/get measuring round-trip time.</p>
           </div>
-          <input type="range" id="bw-slider" min="0" max="200" value="0">
-        </div>
-
-        <div class="form-group">
-          <div class="form-label">
-            <span>Latency</span>
-            <span id="lat-value-control" class="value">0 ms</span>
+          <div class="card-actions">
+            <button class="run-btn" data-run="latency">Run</button>
+            <button class="clear-btn" data-clear="latency">Clear</button>
           </div>
-          <input type="range" id="lat-slider" min="0" max="1000" value="0">
         </div>
-
-        <div class="form-group">
-          <div class="form-label">
-            <span>Loss</span>
-            <span id="loss-value-control" class="value">0 %</span>
-          </div>
-          <input type="range" id="loss-slider" min="0" max="50" step="0.1" value="0">
-        </div>
-
-        <div class="form-group">
-          <div class="form-label">
-            <span>Jitter</span>
-            <span id="jitter-value-control" class="value">0 ms</span>
-          </div>
-          <input type="range" id="jitter-slider" min="0" max="200" value="0">
-        </div>
-
-        <button id="apply-btn">Apply Changes</button>
-
-        <div class="status-indicator">
-          <div id="proxy-status-dot" class="status-dot"></div>
-          <span id="proxy-status-text">Disconnected</span>
+        <div class="card-body">
+          <div class="result-placeholder">Not yet run</div>
         </div>
       </div>
 
-      <div class="panel">
-        <div class="panel-title">Current Config</div>
-        <div id="config-display" class="config-display">Loading...</div>
+      <!-- Card 2: Download Throughput -->
+      <div class="test-card" data-suite="download">
+        <div class="card-header">
+          <div class="card-meta">
+            <h2>2. Download Throughput</h2>
+            <p>Download 50 KB, 500 KB, and 2 MB payloads via httpbin.org/bytes.</p>
+          </div>
+          <div class="card-actions">
+            <button class="run-btn" data-run="download">Run</button>
+            <button class="clear-btn" data-clear="download">Clear</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="result-placeholder">Not yet run</div>
+        </div>
       </div>
-    </div>
+
+      <!-- Card 3: Upload Throughput -->
+      <div class="test-card" data-suite="upload">
+        <div class="card-header">
+          <div class="card-meta">
+            <h2>3. Upload Throughput</h2>
+            <p>POST 50 KB, 500 KB, and 2 MB random payloads to httpbin.org/post.</p>
+          </div>
+          <div class="card-actions">
+            <button class="run-btn" data-run="upload">Run</button>
+            <button class="clear-btn" data-clear="upload">Clear</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="result-placeholder">Not yet run</div>
+        </div>
+      </div>
+
+      <!-- Card 4: REST API Chain -->
+      <div class="test-card" data-suite="api-chain">
+        <div class="card-header">
+          <div class="card-meta">
+            <h2>4. REST API Chain</h2>
+            <p>Sequential calls to 5 public APIs, measuring latency for each step.</p>
+          </div>
+          <div class="card-actions">
+            <button class="run-btn" data-run="api-chain">Run</button>
+            <button class="clear-btn" data-clear="api-chain">Clear</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="result-placeholder">Not yet run</div>
+        </div>
+      </div>
+
+      <!-- Card 5: Streaming / TTFB -->
+      <div class="test-card" data-suite="stream">
+        <div class="card-header">
+          <div class="card-meta">
+            <h2>5. Streaming / TTFB</h2>
+            <p>Consume a chunked stream from httpbin.org/stream/20 and analyse timing.</p>
+          </div>
+          <div class="card-actions">
+            <button class="run-btn" data-run="stream">Run</button>
+            <button class="clear-btn" data-clear="stream">Clear</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="result-placeholder">Not yet run</div>
+        </div>
+      </div>
+
+      <!-- Card 6: LLM API Call -->
+      <div class="test-card" data-suite="llm">
+        <div class="card-header">
+          <div class="card-meta">
+            <h2>6. LLM API Call</h2>
+            <p>Stream a GPT-4o-mini completion via OpenAI and measure token throughput.</p>
+          </div>
+          <div class="card-actions">
+            <button class="run-btn" data-run="llm">Run</button>
+            <button class="clear-btn" data-clear="llm">Clear</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="api-key-row">
+            <input type="password" id="openai-key" placeholder="OpenAI API key (optional, also env OPENAI_API_KEY)">
+          </div>
+          <div class="result-placeholder">Not yet run</div>
+        </div>
+      </div>
+
+      <!-- Card 7: Concurrent Burst -->
+      <div class="test-card" data-suite="burst">
+        <div class="card-header">
+          <div class="card-meta">
+            <h2>7. Concurrent Burst</h2>
+            <p>Fire N parallel GET requests to httpbin.org/get and display a Gantt timeline.</p>
+          </div>
+          <div class="card-actions">
+            <select id="burst-count">
+              <option value="1">1 req</option>
+              <option value="5" selected>5 req</option>
+              <option value="10">10 req</option>
+              <option value="20">20 req</option>
+            </select>
+            <button class="run-btn" data-run="burst">Run</button>
+            <button class="clear-btn" data-clear="burst">Clear</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="result-placeholder">Not yet run</div>
+        </div>
+      </div>
+    </main>
+
+    <!-- RIGHT: Live summary panel -->
+    <aside class="summary-panel">
+      <div class="summary-section">
+        <h3>Proxy Status</h3>
+        <div id="proxy-status" class="status-block">
+          <span class="status-dot" id="proxy-dot"></span>
+          <span id="proxy-state">Checking…</span>
+        </div>
+        <div class="metric-grid" id="proxy-metrics">
+          <div class="metric-item"><span class="metric-label">Profile</span><span class="metric-val" id="proxy-profile">--</span></div>
+          <div class="metric-item"><span class="metric-label">Bandwidth</span><span class="metric-val" id="proxy-bandwidth">--</span></div>
+          <div class="metric-item"><span class="metric-label">Latency</span><span class="metric-val" id="proxy-latency">--</span></div>
+          <div class="metric-item"><span class="metric-label">Loss</span><span class="metric-val" id="proxy-loss">--</span></div>
+        </div>
+      </div>
+
+      <div class="summary-section">
+        <h3>Session Summary</h3>
+        <div class="metric-grid">
+          <div class="metric-item"><span class="metric-label">Requests</span><span class="metric-val" id="sum-requests">0</span></div>
+          <div class="metric-item"><span class="metric-label">Bytes</span><span class="metric-val" id="sum-bytes">0</span></div>
+          <div class="metric-item"><span class="metric-label">Avg Latency</span><span class="metric-val" id="sum-latency">--</span></div>
+        </div>
+      </div>
+
+      <button class="run-all-btn" id="run-all">Run All Tests</button>
+
+      <div class="summary-section log-section">
+        <div class="log-header">
+          <h3>Activity Log</h3>
+          <button id="clear-log" class="clear-log-btn">Clear</button>
+        </div>
+        <div id="activity-log" class="activity-log">
+          <div class="log-line log-info"><span class="log-ts"></span><span class="log-msg">Run a test to see results here.</span></div>
+        </div>
+      </div>
+    </aside>
   </div>
 
-  <div id="toast" class="toast"></div>
-
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

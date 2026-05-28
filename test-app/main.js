@@ -2,397 +2,477 @@ const { app, BrowserWindow, ipcMain } = require('electron');
 const http = require('http');
 const https = require('https');
 const path = require('path');
+const { performance } = require('perf_hooks');
 
-// ─── CONFIG (easy to change) ───────────────────────────────────────────────
-const CONFIG = {
-  proxyHost: "127.0.0.1",
-  proxyPort: 8090,
-  controlPort: 8091,
-  measureIntervalMs: 2500,
-  historyPoints: 60,
-  downloadUrl: "https://speed.cloudflare.com/__down?bytes=500000",
-  downloadTimeoutMs: 30000,
-  uploadUrl: "https://speed.cloudflare.com/__up",
-  uploadBytes: 500000,
-  pingUrl: "https://www.google.com",
-};
+const { createLocalServer } = require('./server');
+const { TimedRequest } = require('./TimedRequest');
 
-// ─── LOGGER ────────────────────────────────────────────────────────────────
-const LOG_LEVELS = { INFO: 'INFO', WARN: 'WARN', ERROR: 'ERROR' };
-
-function log(level, msg, data) {
-  const ts = new Date().toISOString();
-  const prefix = `[${ts}] [${level}]`;
-  if (data !== undefined) {
-    console.log(`${prefix} ${msg}`, typeof data === 'object' ? JSON.stringify(data) : data);
-  } else {
-    console.log(`${prefix} ${msg}`);
-  }
-}
-
-const logger = {
-  info:  (msg, data) => log(LOG_LEVELS.INFO,  msg, data),
-  warn:  (msg, data) => log(LOG_LEVELS.WARN,  msg, data),
-  error: (msg, data) => log(LOG_LEVELS.ERROR, msg, data),
-};
-
-// ─── STATE ─────────────────────────────────────────────────────────────────
+// ─── STATE ───────────────────────────────────────────────────────────────────
 let mainWindow = null;
-let measureInterval = null;
-let consecutiveErrors = 0;
-const history = {
-  download: [],
-  upload: [],
-  latency: [],
+const sessionStats = {
+  totalRequests: 0,
+  totalBytes: 0,
+  totalDuration: 0,
+  latencySum: 0,
+  latencyCount: 0,
 };
 
-// ─── HELPERS ───────────────────────────────────────────────────────────────
-function now() {
-  return new Date().toISOString();
+// ─── LOCAL BACKEND ───────────────────────────────────────────────────────────
+const localServer = createLocalServer();
+const LOCAL_PORT = 7331;
+const CONTROL_PORT = 8091;
+const PROXY_STATUS_URL = `http://127.0.0.1:${CONTROL_PORT}/status`;
+
+function startLocalServer() {
+  return new Promise((resolve) => {
+    const server = localServer.listen(LOCAL_PORT, () => {
+      console.log(`[backend] Local server listening on http://127.0.0.1:${LOCAL_PORT}`);
+      resolve(server);
+    });
+  });
 }
 
-function msSince(start) {
-  return Date.now() - start;
-}
-
-function makeProxyRequest(urlStr, options = {}) {
-  const url = new URL(urlStr);
-  const isHttps = url.protocol === 'https:';
-  const proxyHost = CONFIG.proxyHost;
-  const proxyPort = CONFIG.proxyPort;
-
-  if (isHttps) {
-    return makeHttpsThroughProxy(url, options);
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
+function updateSessionStats(result) {
+  sessionStats.totalRequests++;
+  sessionStats.totalBytes += result.bytes || 0;
+  sessionStats.totalDuration += result.duration_ms || 0;
+  if (result.duration_ms != null && !result.error) {
+    sessionStats.latencySum += result.duration_ms;
+    sessionStats.latencyCount++;
   }
+}
 
-  const requestOptions = {
-    hostname: proxyHost,
-    port: proxyPort,
-    method: options.method || 'GET',
-    path: url.href,
-    headers: {
-      Host: url.host,
-      ...options.headers,
-    },
-    timeout: options.timeout || 5000,
-    agent: false,
+function getSessionSummary() {
+  return {
+    totalRequests: sessionStats.totalRequests,
+    totalBytes: sessionStats.totalBytes,
+    avgLatency:
+      sessionStats.latencyCount > 0
+        ? Math.round(sessionStats.latencySum / sessionStats.latencyCount)
+        : 0,
   };
-
-  return new Promise((resolve, reject) => {
-    const start = Date.now();
-    const req = http.request(requestOptions);
-
-    req.on('timeout', () => {
-      req.destroy();
-      reject(new Error('Request timeout'));
-    });
-
-    req.on('error', reject);
-
-    req.on('response', (res) => {
-      const chunks = [];
-      res.on('data', chunk => chunks.push(chunk));
-      res.on('end', () => {
-        const elapsed = Date.now() - start;
-        resolve({
-          bytes: Buffer.concat(chunks).length,
-          elapsed,
-          status: res.statusCode,
-          headers: res.headers,
-          error: null,
-        });
-      });
-      res.on('error', reject);
-    });
-
-    if (options.body) {
-      req.write(options.body);
-    }
-    req.end();
-  });
 }
 
-function makeHttpsThroughProxy(url, options) {
-  const proxyHost = CONFIG.proxyHost;
-  const proxyPort = CONFIG.proxyPort;
-
-  logger.info(`HTTPS CONNECT → ${url.hostname}:443 via ${proxyHost}:${proxyPort}`);
-
-  return new Promise((resolve, reject) => {
-    const start = Date.now();
-    const connectReq = http.request({
-      hostname: proxyHost,
-      port: proxyPort,
-      method: 'CONNECT',
-      path: `${url.hostname}:443`,
-      timeout: options.timeout || 5000,
-    });
-
-    connectReq.on('error', (err) => {
-      logger.error(`CONNECT failed for ${url.hostname}: ${err.message}`);
-      reject(err);
-    });
-    connectReq.on('connect', (res, socket) => {
-      logger.info(`CONNECT tunnel established → ${url.hostname} (proxy status ${res.statusCode})`);
-      const tls = require('tls');
-      let settled = false;
-      const settle = (fn, val) => {
-        if (!settled) { settled = true; fn(val); }
-      };
-
-      const tlsConn = tls.connect({
-        socket,
-        servername: url.hostname,
-        timeout: options.timeout || 5000,
-      });
-
-      tlsConn.on('error', (err) => {
-        logger.error(`TLS error for ${url.hostname}: ${err.message}`);
-        settle(reject, err);
-      });
-      tlsConn.on('timeout', () => {
-        logger.warn(`TLS timeout for ${url.hostname}`);
-        tlsConn.destroy();
-        settle(reject, new Error('TLS timeout'));
-      });
-
-      tlsConn.on('secureConnect', () => {
-        logger.info(`TLS handshake complete → ${url.hostname} (+${Date.now() - start}ms)`);
-        let reqStr = `${options.method || 'GET'} ${url.pathname}${url.search} HTTP/1.1\r\n`;
-        reqStr += `Host: ${url.host}\r\n`;
-        reqStr += `Connection: close\r\n`;
-        if (options.headers) {
-          for (const [k, v] of Object.entries(options.headers)) {
-            reqStr += `${k}: ${v}\r\n`;
-          }
-        }
-        reqStr += `\r\n`;
-        if (options.body) {
-          reqStr += options.body.toString();
-        }
-        tlsConn.write(reqStr);
-
-        const deadline = setTimeout(() => {
-          logger.warn(`Response timeout for ${url.hostname} after ${Date.now() - start}ms`);
-          tlsConn.destroy();
-          settle(reject, new Error('Response timeout'));
-        }, options.timeout || 5000);
-
-        let response = Buffer.alloc(0);
-        tlsConn.on('data', (chunk) => {
-          response = Buffer.concat([response, chunk]);
-        });
-        tlsConn.on('end', () => {
-          clearTimeout(deadline);
-          const elapsed = Date.now() - start;
-          logger.info(`Response complete from ${url.hostname}: ${response.length} bytes in ${elapsed}ms`);
-          settle(resolve, {
-            bytes: response.length,
-            elapsed,
-            status: 200,
-            headers: {},
-            error: null,
-          });
-        });
-      });
-    });
-    connectReq.end();
-  });
-}
-
-// ─── MEASUREMENT FUNCTIONS ──────────────────────────────────────────────────
-async function measureDownload() {
-  const t = Date.now();
-  try {
-    const res = await makeProxyRequest(CONFIG.downloadUrl, { timeout: CONFIG.downloadTimeoutMs });
-    if (res.error) throw res.error;
-    const mbps = (res.bytes * 8) / (res.elapsed / 1000) / 1_000_000;
-    logger.info(`download OK: ${mbps.toFixed(2)} Mbps (${res.bytes} bytes in ${res.elapsed}ms)`);
-    return { timestamp: now(), mbps, error: null };
-  } catch (err) {
-    logger.error(`download FAIL (${Date.now() - t}ms): ${err.message}`);
-    return { timestamp: now(), mbps: null, error: err.message };
+// Keep a simple event-emitter pattern for streaming results back to the renderer.
+const resultListeners = new Set();
+function emitResult(type, data) {
+  for (const win of resultListeners) {
+    win.webContents.send('test-result', { type, data });
   }
 }
 
-async function measureUpload() {
-  const data = require('crypto').randomBytes(CONFIG.uploadBytes);
-  const t = Date.now();
-  try {
-    const res = await makeProxyRequest(CONFIG.uploadUrl, {
-      method: 'POST',
-      body: data,
-      headers: {
-        'Content-Type': 'application/octet-stream',
-        'Content-Length': data.length,
-      },
-    });
-    if (res.error) throw res.error;
-    const mbps = (CONFIG.uploadBytes * 8) / (res.elapsed / 1000) / 1_000_000;
-    logger.info(`upload OK: ${mbps.toFixed(2)} Mbps (${CONFIG.uploadBytes} bytes in ${res.elapsed}ms)`);
-    return { timestamp: now(), mbps, error: null };
-  } catch (err) {
-    logger.error(`upload FAIL (${Date.now() - t}ms): ${err.message}`);
-    return { timestamp: now(), mbps: null, error: err.message };
-  }
+// ─── LOGGING HELPERS ─────────────────────────────────────────────────────────
+// Emit a plain-English log line to the renderer's activity log panel.
+function log(level, msg) {
+  emitResult('log', { level, msg, ts: Date.now() });
+  console.log(`[${level.toUpperCase()}] ${msg}`);
 }
 
-async function measureLatency() {
-  const t = Date.now();
-  try {
-    const start = Date.now();
-    const res = await makeProxyRequest(CONFIG.pingUrl, { method: 'HEAD' });
-    if (res.error) throw res.error;
-    const elapsed = Date.now() - start;
-    logger.info(`latency OK: ${elapsed}ms`);
-    return { timestamp: now(), ms: elapsed, error: null };
-  } catch (err) {
-    logger.error(`latency FAIL (${Date.now() - t}ms): ${err.message}`);
-    return { timestamp: now(), ms: null, error: err.message };
-  }
+// Tiny formatters for use inside the main process (no DOM available here).
+function _ms(n) { return n != null ? `${Math.round(n)} ms` : '--'; }
+function _bps(n) {
+  if (!n) return '--';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)} Mbps`;
+  if (n >= 1_000)     return `${(n / 1_000).toFixed(0)} Kbps`;
+  return `${Math.round(n)} bps`;
 }
-
-// ─── CLASSIFICATION ───────────────────────────────────────────────────────
-function classifyMeasurement(download, upload, latency) {
-  if (download.error || upload.error || latency.error) {
-    return 'ERROR';
-  }
-  const d = download.mbps;
-  const l = latency.ms;
-
-  if (d < 1 || l > 500) return 'SEVERE';
-  if (d < 5 || l > 200) return 'POOR';
-  if (d < 10 || l > 100) return 'SLOW';
-  return 'NORMAL';
+function _bytes(n) {
+  if (n == null) return '--';
+  if (n < 1024)             return `${n} B`;
+  if (n < 1024 * 1024)      return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+}
+function _host(url) {
+  try { const u = new URL(url); return u.hostname + u.pathname.slice(0, 24); }
+  catch { return url.slice(0, 30); }
 }
 
 // ─── IPC HANDLERS ───────────────────────────────────────────────────────────
-ipcMain.handle('get-config', async () => {
-  logger.info(`get-config → control port ${CONFIG.controlPort}`);
-  return new Promise((resolve, reject) => {
-    const req = http.get(`http://127.0.0.1:${CONFIG.controlPort}/status`, (res) => {
+
+// Register/unregister renderer windows so we can push streaming results.
+ipcMain.on('register-listener', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (win) resultListeners.add(win);
+});
+
+ipcMain.on('unregister-listener', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (win) resultListeners.delete(win);
+});
+
+// Session stats (cumulative totals across all test runs).
+ipcMain.handle('get-session-stats', () => getSessionSummary());
+
+// Proxy status polling (read-only).
+ipcMain.handle('get-proxy-status', async () => {
+  return new Promise((resolve) => {
+    const req = http.get(PROXY_STATUS_URL, { timeout: 5000 }, (res) => {
       let data = '';
-      res.on('data', chunk => data += chunk);
+      res.on('data', (chunk) => { data += chunk; });
       res.on('end', () => {
         try {
           const parsed = JSON.parse(data);
-          logger.info('get-config OK', { bandwidth_bps: parsed.bandwidth_bps, latency_ms: parsed.latency_ms, loss_pct: parsed.loss_pct });
-          resolve(parsed);
-        } catch (e) {
-          logger.error(`get-config parse error: ${e.message}`);
-          reject(e);
+          resolve({ ok: true, ...parsed });
+        } catch {
+          resolve({ ok: false, error: 'Invalid JSON from proxy status' });
         }
       });
     });
-    req.on('error', (err) => {
-      logger.error(`get-config FAIL: ${err.message} (is NetShape running on port ${CONFIG.controlPort}?)`);
-      reject(err);
-    });
-    req.setTimeout(5000, () => {
-      req.destroy();
-      logger.error(`get-config timeout after 5s`);
-      reject(new Error('Control port timeout'));
-    });
+    req.on('error', () => resolve({ ok: false, error: 'Proxy unreachable' }));
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'Proxy timeout' }); });
   });
 });
 
-ipcMain.handle('set-config', async (event, payload) => {
-  logger.info('set-config →', payload);
-  return new Promise((resolve, reject) => {
-    const postData = JSON.stringify(payload);
-    const req = http.request({
-      hostname: '127.0.0.1',
-      port: CONFIG.controlPort,
-      path: '/configure',
+// ─── TEST 1: Latency Ping Fire ───────────────────────────────────────────────
+ipcMain.handle('test-latency', async () => {
+  log('info', '▶ Latency – sending 5 sequential pings to httpbin.org/get');
+  const results = [];
+  for (let i = 0; i < 5; i++) {
+    const req = new TimedRequest('https://httpbin.org/get', { timeout: 30000 });
+    const result = await req.run();
+    updateSessionStats(result);
+    results.push(result);
+    emitResult('latency', { index: i, result });
+    const ok = result.status === 200 && !result.error;
+    log(ok ? 'ok' : 'error',
+      `  ${ok ? '✓' : '✗'} Ping ${i + 1}/5 → ${_ms(result.duration_ms)}` +
+      (result.error ? `  [${result.error}]` : `  (TTFB ${_ms(result.ttfb_ms)})`));
+  }
+
+  const durations = results.filter((r) => r.duration_ms != null).map((r) => r.duration_ms);
+  const sorted = [...durations].sort((a, b) => a - b);
+  const min = sorted[0] || 0;
+  const max = sorted[sorted.length - 1] || 0;
+  const avg = sorted.length ? sorted.reduce((a, b) => a + b, 0) / sorted.length : 0;
+  const p95 = sorted.length ? percentile(sorted, 0.95) : 0;
+
+  log('ok', `  Done – avg ${_ms(Math.round(avg))}  p95 ${_ms(Math.round(p95))}  min ${_ms(min)}  max ${_ms(max)}`);
+  return {
+    results,
+    metrics: { min, avg: Math.round(avg), max, p95: Math.round(p95) },
+  };
+});
+
+function percentile(sorted, p) {
+  const idx = Math.ceil((sorted.length - 1) * p);
+  return sorted[Math.min(idx, sorted.length - 1)];
+}
+
+// ─── TEST 2: Download Throughput ─────────────────────────────────────────────
+ipcMain.handle('test-download', async () => {
+  log('info', '▶ Download – fetching 50 KB / 500 KB / 2 MB from httpbin.org/bytes');
+  const sizes = [
+    { label: '50 KB', bytes: 51200 },
+    { label: '500 KB', bytes: 512000 },
+    { label: '2 MB', bytes: 2097152 },
+  ];
+
+  const results = [];
+  for (let i = 0; i < sizes.length; i++) {
+    const { label, bytes } = sizes[i];
+    const url = `https://httpbin.org/bytes/${bytes}`;
+    const req = new TimedRequest(url, { timeout: 60000 });
+    const result = await req.run();
+    updateSessionStats(result);
+    results.push({ label, ...result });
+    emitResult('download', { index: i, label, result });
+    const ok = result.status === 200 && !result.error;
+    log(ok ? 'ok' : 'error',
+      `  ${ok ? '✓' : '✗'} ${label} → ${_bps(result.throughput_bps)} in ${_ms(result.duration_ms)}` +
+      (result.error ? `  [${result.error}]` : `  (received ${_bytes(result.bytes)})`));
+  }
+
+  return { results };
+});
+
+// ─── TEST 3: Upload Throughput ───────────────────────────────────────────────
+ipcMain.handle('test-upload', async () => {
+  log('info', '▶ Upload – POSTing 50 KB / 500 KB / 2 MB random data to httpbin.org/post');
+  const sizes = [
+    { label: '50 KB', bytes: 51200 },
+    { label: '500 KB', bytes: 512000 },
+    { label: '2 MB', bytes: 2097152 },
+  ];
+
+  const results = [];
+  for (let i = 0; i < sizes.length; i++) {
+    const { label, bytes } = sizes[i];
+    const body = require('crypto').randomBytes(bytes);
+    const req = new TimedRequest('https://httpbin.org/post', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': bytes,
+      },
+      body,
+      timeout: 60000,
+    });
+    const result = await req.run();
+    updateSessionStats(result);
+    results.push({ label, ...result });
+    emitResult('upload', { index: i, label, result });
+    const ok = result.status === 200 && !result.error;
+    log(ok ? 'ok' : 'error',
+      `  ${ok ? '✓' : '✗'} ${label} → ${_bps(result.throughput_bps)} in ${_ms(result.duration_ms)}` +
+      (result.error ? `  [${result.error}]` : ''));
+  }
+
+  return { results };
+});
+
+// ─── TEST 4: REST API Chain ──────────────────────────────────────────────────
+ipcMain.handle('test-api-chain', async () => {
+  log('info', '▶ API Chain – 5 sequential calls to real public APIs');
+  const urls = [
+    'https://jsonplaceholder.typicode.com/posts/1',
+    'https://jsonplaceholder.typicode.com/users/1',
+    'https://api.open-meteo.com/v1/forecast?latitude=48.85&longitude=2.35&current_weather=true',
+    'https://httpbin.org/uuid',
+    'https://httpbin.org/headers',
+  ];
+
+  const results = [];
+  let cumulative = 0;
+  for (let i = 0; i < urls.length; i++) {
+    const req = new TimedRequest(urls[i], { timeout: 30000 });
+    const result = await req.run();
+    updateSessionStats(result);
+    cumulative += result.duration_ms || 0;
+    results.push({ ...result, cumulative });
+    emitResult('api-chain', { index: i, result: { ...result, cumulative } });
+    const ok = result.status === 200 && !result.error;
+    log(ok ? 'ok' : 'error',
+      `  ${ok ? '✓' : '✗'} Step ${i + 1}/5  ${_host(urls[i])} → ` +
+      `${result.status ?? 'ERR'}  ${_ms(result.duration_ms)}` +
+      (result.error ? `  [${result.error}]` : ''));
+  }
+
+  log('ok', `  Done – total chain time ${_ms(cumulative)}`);
+  return { results };
+});
+
+// ─── TEST 5: Streaming / TTFB ────────────────────────────────────────────────
+ipcMain.handle('test-stream', async () => {
+  log('info', '▶ Stream – consuming 20-chunk stream from httpbin.org/stream/20');
+  const req = new TimedRequest('https://httpbin.org/stream/20', { timeout: 30000 });
+  const result = await req.run();
+  updateSessionStats(result);
+  const ok = result.status === 200 && !result.error;
+  log(ok ? 'ok' : 'error',
+    `  ${ok ? '✓' : '✗'} TTFB ${_ms(result.ttfb_ms)}  total ${_ms(result.duration_ms)}` +
+    `  ${result.chunks} chunks  ${_bps(result.throughput_bps)}` +
+    (result.error ? `  [${result.error}]` : ''));
+  return { result };
+});
+
+// ─── TEST 6: LLM API Call (non-streaming fallback, kept as dead code) ────────
+// The renderer always calls 'test-llm-stream' directly, so this is not used.
+ipcMain.handle('test-llm', async (event, apiKey) => {
+  if (!apiKey) return { error: 'No API key provided' };
+  log('info', '▶ LLM (simple) – single round-trip to OpenAI');
+  const body = JSON.stringify({
+    model: 'gpt-4o-mini',
+    messages: [{ role: 'user', content: 'Reply with exactly 100 words about space.' }],
+    stream: true,
+  });
+  const req = new TimedRequest('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body,
+    timeout: 60000,
+  });
+  const result = await req.run();
+  updateSessionStats(result);
+  return { result };
+});
+
+// ─── TEST 7: Concurrent Burst ────────────────────────────────────────────────
+ipcMain.handle('test-burst', async (event, count) => {
+  log('info', `▶ Burst – firing ${count} parallel GET requests to httpbin.org/get simultaneously`);
+  const url = 'https://httpbin.org/get';
+  const promises = Array.from({ length: count }, () => {
+    const req = new TimedRequest(url, { timeout: 30000 });
+    return req.run();
+  });
+
+  const results = await Promise.all(promises);
+  results.forEach(updateSessionStats);
+
+  const durations = results.filter((r) => r.duration_ms != null).map((r) => r.duration_ms);
+  const sorted = [...durations].sort((a, b) => a - b);
+  const fastest = sorted[0] || 0;
+  const slowest = sorted[sorted.length - 1] || 0;
+  const median = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0;
+  const completed = results.filter((r) => !r.error && r.status === 200).length;
+  const failed = results.length - completed;
+
+  const allPassed = failed === 0;
+  log(allPassed ? 'ok' : 'warn',
+    `  ${allPassed ? '✓' : '⚠'} Burst done – ${completed}/${count} passed` +
+    `  fastest ${_ms(fastest)}  median ${_ms(median)}  slowest ${_ms(slowest)}` +
+    (failed > 0 ? `  (${failed} failed)` : ''));
+
+  return {
+    results,
+    metrics: { fastest, slowest, median, completed, failed },
+  };
+});
+
+// ─── LLM STREAMING (custom handler for live token display) ───────────────────
+ipcMain.handle('test-llm-stream', async (event, apiKey) => {
+  if (!apiKey) {
+    log('warn', '  ⚠ LLM skipped – no API key provided (enter one in the card or set OPENAI_API_KEY)');
+    return { error: 'No API key provided' };
+  }
+  log('info', '▶ LLM – streaming GPT-4o-mini via OpenAI (tokens will appear live below)');
+
+  return new Promise((resolve) => {
+    const startTime = performance.now();
+    let ttfb = null;
+    let firstTokenTime = null;
+    let tokenCount = 0;
+    let chunkCount = 0;
+    const tokens = [];
+    let status = null;
+
+    const body = JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: 'Reply with exactly 100 words about space.' }],
+      stream: true,
+    });
+
+    const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
+    const options = {
+      hostname: 'api.openai.com',
+      port: 443,
+      path: '/v1/chat/completions',
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(postData),
+        Authorization: `Bearer ${apiKey}`,
       },
-      timeout: 5000,
-    }, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          logger.info('set-config OK', parsed);
-          resolve(parsed);
-        } catch (e) {
-          logger.warn(`set-config response not JSON: ${data}`);
-          resolve(data);
+      timeout: 60000,
+    };
+
+    if (proxyUrl) {
+      const { HttpsProxyAgent } = require('https-proxy-agent');
+      options.agent = new HttpsProxyAgent(proxyUrl);
+    }
+
+    const req = https.request(options, (res) => {
+      status = res.statusCode;
+
+      res.on('data', (chunk) => {
+        if (ttfb === null) {
+          ttfb = performance.now() - startTime;
+        }
+        chunkCount++;
+        const lines = chunk.toString().split('\n');
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            if (data === '[DONE]') continue;
+            try {
+              const parsed = JSON.parse(data);
+              const delta = parsed.choices?.[0]?.delta?.content;
+              if (delta) {
+                if (firstTokenTime === null) {
+                  firstTokenTime = performance.now() - startTime;
+                }
+                tokens.push(delta);
+                tokenCount++;
+                emitResult('llm-token', { token: delta });
+              }
+            } catch {
+              // ignore parse errors for non-JSON lines
+            }
+          }
         }
       });
+
+      res.on('end', () => {
+        const endTime = performance.now();
+        const duration = endTime - startTime;
+        const result = {
+          url: 'https://api.openai.com/v1/chat/completions',
+          status,
+          ttfb_ms: ttfb !== null ? Math.round(ttfb * 100) / 100 : null,
+          duration_ms: Math.round(duration * 100) / 100,
+          bytes: tokens.join('').length,
+          throughput_bps: 0,
+          error: null,
+          chunks: chunkCount,
+          firstTokenTime,
+          tokenCount,
+          text: tokens.join(''),
+        };
+        updateSessionStats(result);
+        const ok = status === 200;
+        log(ok ? 'ok' : 'error',
+          `  ${ok ? '✓' : '✗'} LLM done – first token ${_ms(firstTokenTime)}` +
+          `  total ${_ms(Math.round(duration))}  ${tokenCount} tokens` +
+          (ok ? '' : `  [HTTP ${status}]`));
+        resolve({ result });
+      });
+
+      res.on('error', (err) => {
+        resolve({
+          result: {
+            url: 'https://api.openai.com/v1/chat/completions',
+            status,
+            ttfb_ms: null,
+            duration_ms: performance.now() - startTime,
+            bytes: 0,
+            throughput_bps: 0,
+            error: err.message,
+            chunks: chunkCount,
+          },
+        });
+      });
     });
+
     req.on('error', (err) => {
-      logger.error(`set-config FAIL: ${err.message}`);
-      reject(err);
+      resolve({
+        result: {
+          url: 'https://api.openai.com/v1/chat/completions',
+          status: null,
+          ttfb_ms: null,
+          duration_ms: performance.now() - startTime,
+          bytes: 0,
+          throughput_bps: 0,
+          error: err.message,
+          chunks: 0,
+        },
+      });
     });
-    req.write(postData);
+
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({
+        result: {
+          url: 'https://api.openai.com/v1/chat/completions',
+          status: null,
+          ttfb_ms: null,
+          duration_ms: performance.now() - startTime,
+          bytes: 0,
+          throughput_bps: 0,
+          error: 'Request timeout',
+          chunks: 0,
+        },
+      });
+    });
+
+    req.write(body);
     req.end();
   });
 });
 
-// ─── MEASUREMENT LOOP ─────────────────────────────────────────────────────
-let cycleCount = 0;
-async function runMeasurementCycle() {
-  cycleCount++;
-  logger.info(`── cycle #${cycleCount} start ──`);
-  const [download, upload, latency] = await Promise.all([
-    measureDownload(),
-    measureUpload(),
-    measureLatency(),
-  ]);
-
-  const classification = classifyMeasurement(download, upload, latency);
-  logger.info(`── cycle #${cycleCount} result: ${classification} | DL=${download.mbps != null ? download.mbps.toFixed(2)+'Mbps' : 'ERR'} UL=${upload.mbps != null ? upload.mbps.toFixed(2)+'Mbps' : 'ERR'} LAT=${latency.ms != null ? latency.ms+'ms' : 'ERR'} ──`);
-
-  if (classification === 'ERROR') {
-    consecutiveErrors++;
-    logger.warn(`consecutive errors: ${consecutiveErrors}`);
-  } else {
-    consecutiveErrors = 0;
-  }
-
-  // rolling loss: fraction of failed measurement values in last N cycles
-  const recentCycles = 10;
-  const failedCount = [
-    download, upload, latency
-  ].filter(m => !!m.error).length;
-  history.loss = history.loss || [];
-  history.loss.push(failedCount > 0);
-  if (history.loss.length > recentCycles) history.loss.shift();
-  const lossRate = history.loss.length
-    ? history.loss.filter(Boolean).length / history.loss.length
-    : 0;
-
-  history.download.push(download);
-  history.upload.push(upload);
-  history.latency.push(latency);
-
-  if (history.download.length > CONFIG.historyPoints) {
-    history.download.shift();
-    history.upload.shift();
-    history.latency.shift();
-  }
-
-  if (mainWindow) {
-    mainWindow.webContents.send('measurement', {
-      download,
-      upload,
-      latency,
-      classification,
-      connected: consecutiveErrors < 3,
-      lossRate,
-    });
-  }
-}
-
+// ─── ELECTRON MAIN ───────────────────────────────────────────────────────────
 function createWindow() {
-  logger.info(`NetShape Test App starting — proxy ${CONFIG.proxyHost}:${CONFIG.proxyPort} | control :${CONFIG.controlPort} | interval ${CONFIG.measureIntervalMs}ms`);
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    width: 1400,
+    height: 900,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -401,28 +481,19 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  mainWindow.webContents.openDevTools({ mode: 'detach' });
-
-  // Start measurement loop
-  measureInterval = setInterval(runMeasurementCycle, CONFIG.measureIntervalMs);
-  runMeasurementCycle();
+  // mainWindow.webContents.openDevTools({ mode: 'detach' });
 
   mainWindow.on('closed', () => {
     mainWindow = null;
-    if (measureInterval) {
-      clearInterval(measureInterval);
-      measureInterval = null;
-    }
   });
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(async () => {
+  await startLocalServer();
+  createWindow();
+});
 
 app.on('window-all-closed', () => {
-  if (measureInterval) {
-    clearInterval(measureInterval);
-    measureInterval = null;
-  }
   if (process.platform !== 'darwin') {
     app.quit();
   }

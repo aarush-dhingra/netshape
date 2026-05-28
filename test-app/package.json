@@ -10,5 +10,9 @@
   },
   "devDependencies": {
     "electron": "latest"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "https-proxy-agent": "^9.0.0"
   }
 }
