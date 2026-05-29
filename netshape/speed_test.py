@@ -84,7 +84,9 @@ def run_speed_test(
 def _timed_download(url: str, *, socks5_proxy: tuple[str, int] | None = None) -> float:
     started = time.perf_counter()
     if socks5_proxy is None:
-        with urllib.request.urlopen(url, timeout=10) as response:
+        # URL is always http://127.0.0.1:<port>/payload — the local test server
+        # started a few lines above. No user-supplied or external URL is possible.
+        with urllib.request.urlopen(url, timeout=10) as response:  # nosec B310
             response.read()
     else:
         _download_via_socks5(url, socks5_proxy)

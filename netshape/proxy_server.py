@@ -467,7 +467,7 @@ class ThrottledProxy:
                 protocol = "socks5"
                 try:
                     await self._handle_socks5(reader, writer)
-                except Exception:
+                except Exception:  # nosec B110 – connection teardown errors are not actionable
                     pass
                 return
 
@@ -563,7 +563,7 @@ class ThrottledProxy:
             await self._tunnel_streams(
                 client_reader, upstream_reader, client_writer, upstream_writer, rules=rules
             )
-        except Exception:
+        except Exception:  # nosec B110 – tunnel teardown errors (EOF, reset) are not actionable
             pass
 
     async def _tunnel_streams(

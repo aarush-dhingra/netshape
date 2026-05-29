@@ -5,39 +5,47 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "netshape"
 version = "0.1.0"
-description = "Run desktop apps through a local throttling proxy."
+description = "Local throttling proxy for testing apps under degraded network conditions."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
 authors = [
     { name = "NetShape contributors" }
 ]
-keywords = ["network", "proxy", "throttling", "testing"]
+keywords = ["network", "proxy", "throttling", "testing", "simulation", "latency", "bandwidth"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Internet :: Proxy Servers",
     "Topic :: Software Development :: Testing",
+    "Topic :: System :: Networking",
 ]
 dependencies = [
     "rich>=13",
     "typer>=0.12",
     "psutil>=5.9",
+    "pyyaml>=6",
 ]
+
+[project.urls]
+Homepage = "https://github.com/netshape/netshape"
+Source = "https://github.com/netshape/netshape"
+"Bug Tracker" = "https://github.com/netshape/netshape/issues"
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.25",
-]
-scenarios = [
-    "pyyaml>=6",
+    "bandit>=1.7",
+    "pip-audit>=2",
 ]
 
 [project.scripts]
@@ -47,9 +55,19 @@ netshape = "netshape.cli:app"
 include = ["netshape*"]
 
 [tool.setuptools.package-data]
-netshape = ["data/*.json", "data/scenarios/*.yaml", "dashboard/*"]
+netshape = [
+    "data/*.json",
+    "data/scenarios/*.yaml",
+    "dashboard/*.html",
+    "dashboard/*.js",
+    "dashboard/*.css",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
+
+[tool.bandit]
+skips = []
+exclude_dirs = ["tests", "test-app"]

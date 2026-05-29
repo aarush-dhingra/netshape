@@ -8,7 +8,7 @@ import http.client
 import json
 import os
 import socket
-import subprocess
+import subprocess  # nosec B404 – spawning a user-provided child process is the core feature
 import sys
 import threading
 import time
@@ -35,7 +35,7 @@ def _load_persisted_rules() -> list[dict[str, Any]]:
             data = json.loads(_RULES_FILE.read_text(encoding="utf-8"))
             if isinstance(data, list):
                 return data
-    except Exception:
+    except Exception:  # nosec B110 – corrupted/missing rules file is not fatal
         pass
     return []
 
@@ -46,7 +46,7 @@ def _save_persisted_rules(rules: list[dict[str, Any]]) -> None:
         _NETSHAPE_DIR.mkdir(parents=True, exist_ok=True)
         clean = [{k: v for k, v in r.items() if k != "id"} for r in rules]
         _RULES_FILE.write_text(json.dumps(clean, indent=2), encoding="utf-8")
-    except Exception:
+    except Exception:  # nosec B110 – persistence failure must not crash the session
         pass
 
 
@@ -183,11 +183,15 @@ def run_session(
             rule_id = result.get("id", "")
             if rule_id:
                 _patch_json(state.control_port, f"/rules/{rule_id}", {"enabled": False})
-        except Exception:
+        except Exception:  # nosec B110 – a bad persisted rule must not block startup
             pass
 
     env = _proxy_env(os.environ.copy(), proxy.traffic_port)
-    process = subprocess.Popen(command, env=env, shell=(sys.platform == "win32"))
+    # shell=True is required on Windows so that script wrappers such as `npx`
+    # (which are .cmd batch files) are found by the shell. The command list comes
+    # directly from the user's CLI invocation, which is the intended use-case for
+    # this developer tool — the user deliberately chose what to run.
+    process = subprocess.Popen(command, env=env, shell=(sys.platform == "win32"))  # nosec B602
     timeout_seconds = None if timeout is None else parse_duration_ms(timeout, kind="timeout") / 1000
     timeout_timer: threading.Timer | None = None
     if timeout_seconds is not None and timeout_seconds > 0:
@@ -450,7 +454,7 @@ def add_rule(
     # Persist so rules survive across sessions.
     try:
         _save_persisted_rules(_get_json(state.control_port, "/rules").get("rules", []))
-    except Exception:
+    except Exception:  # nosec B110 – persistence failure must not block the add_rule return
         pass
     return result
 
@@ -470,7 +474,7 @@ def remove_rule(rule_id: str, *, state_path: Path = DEFAULT_STATE_PATH) -> dict[
             if r.get("comment", "").lower() == rule_id.lower():
                 resolved = r["id"]
                 break
-    except Exception:
+    except Exception:  # nosec B110 – fallback to raw id if name-resolution fails
         pass
 
     conn = __import__("http.client", fromlist=["HTTPConnection"]).HTTPConnection(
@@ -489,7 +493,7 @@ def remove_rule(rule_id: str, *, state_path: Path = DEFAULT_STATE_PATH) -> dict[
     # Persist updated list.
     try:
         _save_persisted_rules(_get_json(state.control_port, "/rules").get("rules", []))
-    except Exception:
+    except Exception:  # nosec B110 – persistence failure must not block the remove_rule return
         pass
     return result
 
@@ -508,7 +512,7 @@ def toggle_rule(rule_id: str, enabled: bool, *, state_path: Path = DEFAULT_STATE
             if r.get("comment", "").lower() == rule_id.lower():
                 resolved = r["id"]
                 break
-    except Exception:
+    except Exception:  # nosec B110 – fallback to raw id if name-resolution fails
         pass
 
     return _patch_json(state.control_port, f"/rules/{resolved}", {"enabled": enabled})
