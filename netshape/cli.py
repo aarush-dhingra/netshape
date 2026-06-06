@@ -14,14 +14,19 @@ import typer
 from . import __version__
 from .core import (
     SessionError,
+    SessionState,
     add_rule,
     adjust_session,
     get_metrics,
     get_metrics_prometheus,
     get_scenario_status,
     get_status,
+    is_dashboard_enabled,
+    is_first_run,
     list_rules,
+    load_config,
     remove_rule,
+    save_config,
     toggle_rule,
     run_session,
     start_scenario_on_session,
@@ -45,6 +50,7 @@ def version_callback(value: bool) -> None:
 
 @app.callback()
 def main(
+    ctx: typer.Context,
     version: bool = typer.Option(
         False,
         "--version",
@@ -54,6 +60,150 @@ def main(
     ),
 ) -> None:
     """Run apps through a local throttling proxy."""
+    # On first ever run (no config file yet), automatically launch the setup
+    # wizard so the user can choose features before anything else happens.
+    # Skip for `netshape setup` itself to avoid running it twice.
+    if is_first_run() and ctx.invoked_subcommand != "setup":
+        _run_first_time_wizard()
+
+
+def _run_first_time_wizard() -> None:
+    """Shared wizard body — called both on first run and from `netshape setup`."""
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.prompt import Prompt
+    from rich import box
+    from rich.table import Table
+    from rich.align import Align
+
+    console = Console(stderr=True)
+    is_first = is_first_run()
+
+    # ── Welcome banner ────────────────────────────────────────────────────────
+    if is_first:
+        title_text = (
+            "[bold cyan]Welcome to NetShape[/bold cyan]  [dim]v{}[/dim]\n\n"
+            "[white]Looks like this is your [bold green]first run[/bold green].\n"
+            "Quick setup — takes [bold green]30 seconds[/bold green].[/white]"
+        ).format(__version__)
+    else:
+        title_text = (
+            "[bold cyan]NetShape Setup[/bold cyan]  [dim]v{}[/dim]\n\n"
+            "[white]Update your preferences.[/white]"
+        ).format(__version__)
+
+    console.print()
+    console.print(Panel.fit(
+        title_text,
+        box=box.DOUBLE,
+        border_style="cyan",
+        padding=(1, 4),
+    ))
+    console.print()
+
+    # ── Feature selection ─────────────────────────────────────────────────────
+    console.print("[bold]  Which features do you want?[/bold]\n")
+
+    features_table = Table(box=box.ROUNDED, show_header=False, padding=(0, 2), border_style="dim")
+    features_table.add_column(justify="center", style="bold cyan", width=4)
+    features_table.add_column(style="bold white")
+    features_table.add_column(style="dim")
+    features_table.add_row("1", "Core CLI only",
+                           "Terminal commands, no browser UI  (smallest install)")
+    features_table.add_row("2", "CLI + Web Dashboard",
+                           "Visual controls, live graphs, scenario builder")
+    console.print(Align.center(features_table))
+    console.print()
+
+    choice = ""
+    while choice not in ("1", "2"):
+        choice = Prompt.ask(
+            "  [cyan]›[/cyan] Enter your choice",
+            choices=["1", "2"],
+            default="2",
+            show_choices=False,
+            show_default=True,
+        )
+
+    dashboard_enabled = choice == "2"
+    console.print()
+
+    # ── Default profile ───────────────────────────────────────────────────────
+    console.print("[bold]  Default throttle profile[/bold]  "
+                  "[dim](used when you don't specify --profile)[/dim]\n")
+
+    profile_table = Table(box=box.ROUNDED, show_header=False, padding=(0, 2), border_style="dim")
+    profile_table.add_column(justify="center", style="bold cyan", width=4)
+    profile_table.add_column(style="bold white", width=12)
+    profile_table.add_column(style="dim")
+    profile_rows = [
+        ("1", "none",      "No throttling — full speed"),
+        ("2", "3g",        "780 kbps · 200ms · 1% loss  (default)"),
+        ("3", "4g",        "4 Mbps · 80ms · 0.3% loss"),
+        ("4", "wifi",      "30 Mbps · 25ms · 0.1% loss"),
+        ("5", "satellite", "12 Mbps · 650ms · 0.5% loss  (high latency)"),
+        ("6", "congested", "1.5 Mbps · 180ms · 2.5% loss  (busy network)"),
+    ]
+    for row in profile_rows:
+        profile_table.add_row(*row)
+    console.print(Align.center(profile_table))
+    console.print()
+
+    profile_map = {"1": None, "2": "3g", "3": "4g", "4": "wifi", "5": "satellite", "6": "congested"}
+    pchoice = ""
+    while pchoice not in profile_map:
+        pchoice = Prompt.ask(
+            "  [cyan]›[/cyan] Enter your choice",
+            choices=list(profile_map.keys()),
+            default="2",
+            show_choices=False,
+            show_default=True,
+        )
+    default_profile = profile_map[pchoice]
+    console.print()
+
+    # ── Save ──────────────────────────────────────────────────────────────────
+    cfg = load_config()
+    cfg["dashboard"] = dashboard_enabled
+    cfg["default_profile"] = default_profile
+    save_config(cfg)
+
+    summary = Table(box=box.ROUNDED, show_header=False, border_style="green", padding=(0, 2))
+    summary.add_column(style="dim")
+    summary.add_column(style="bold white")
+    summary.add_row("Web Dashboard",
+                    "[green]Enabled[/green]" if dashboard_enabled else "[yellow]Disabled[/yellow]")
+    summary.add_row("Default profile",
+                    default_profile if default_profile else "[dim]none[/dim]")
+    summary.add_row("Config saved to", "[dim]~/.netshape/config.json[/dim]")
+
+    console.print(Panel(
+        Align.center(summary),
+        title="[bold green] Setup complete [/bold green]",
+        border_style="green",
+        box=box.ROUNDED,
+        padding=(1, 2),
+    ))
+    console.print()
+
+    # ── Next steps (only shown from setup command, not auto-triggered) ────────
+    if not is_first:
+        profile_flag = f"--profile {default_profile}" if default_profile else ""
+        console.print("[bold]  Next steps[/bold]\n")
+        console.print(f"  [cyan]›[/cyan]  [white]netshape run {profile_flag} -- your-app[/white]")
+        if dashboard_enabled:
+            url = "http://127.0.0.1:8091/dashboard"
+            console.print(
+                f"  [cyan]›[/cyan]  Then open  "
+                f"\033]8;;{url}\033\\[underline cyan]{url}[/underline cyan]\033]8;;\033\\"
+            )
+        console.print()
+        console.print("  Run [cyan]netshape setup[/cyan] at any time to change these settings.\n")
+    else:
+        console.print(
+            "  [dim]You can change these at any time with[/dim] "
+            "[cyan]netshape setup[/cyan]\n"
+        )
 
 
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
@@ -89,6 +239,7 @@ def run(
             jitter=jitter,
             timeout=timeout,
             traffic_port=traffic_port,
+            on_ready=_print_startup_banner,
         )
     except (ProfileError, SessionError, ValueError) as exc:
         typer.echo(f"Error: {exc}", err=True)
@@ -194,6 +345,12 @@ def test_command(
     else:
         typer.echo("Result: no proxy traffic detected")
         raise typer.Exit(1)
+
+
+@app.command("setup")
+def setup_command() -> None:
+    """Interactive setup wizard — configure NetShape preferences."""
+    _run_first_time_wizard()
 
 
 @app.command("profiles")
@@ -520,6 +677,66 @@ def _make_watch_table(payload: dict) -> "Table":
         t.add_section()
         t.add_row("[yellow]Warning[/yellow]", warning)
     return t
+
+
+# ── Startup banner ───────────────────────────────────────────────────────────
+
+def _print_startup_banner(state: "SessionState") -> None:
+    """Print a rich startup banner after the proxy is ready."""
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich import box
+
+    console = Console(stderr=True)
+
+    dashboard_url = f"http://127.0.0.1:{state.control_port}/dashboard"
+    clickable = f"\033]8;;{dashboard_url}\033\\{dashboard_url}\033]8;;\033\\"
+
+    profile_str = state.profile or "custom"
+    bw_str = _format_bps(int(state.bandwidth_bps or 0))
+    lat_str = f"{state.latency_ms} ms"
+    loss_str = f"{float(state.loss_pct or 0) * 100:g}%"
+    jitter_str = f"{state.jitter_ms} ms"
+
+    lines = [
+        f"[bold green] NetShape is active[/bold green]  [dim]·[/dim]  "
+        f"[cyan]{profile_str}[/cyan]",
+        "",
+        f"  [dim]Bandwidth[/dim]  [white]{bw_str}[/white]  "
+        f"[dim]Latency[/dim]  [white]{lat_str}[/white]  "
+        f"[dim]Loss[/dim]  [white]{loss_str}[/white]  "
+        f"[dim]Jitter[/dim]  [white]{jitter_str}[/white]",
+        "",
+    ]
+
+    if is_dashboard_enabled():
+        lines.append(
+            f"  [dim]Dashboard[/dim]  [underline cyan]{clickable}[/underline cyan]"
+        )
+        lines.append(
+            f"  [dim]Adjust   [/dim]  [white]netshape adjust --profile 2g[/white]"
+        )
+    else:
+        lines.append(
+            "  [dim]Dashboard[/dim]  [yellow]disabled[/yellow]  "
+            "[dim](run netshape setup to enable)[/dim]"
+        )
+        lines.append(
+            f"  [dim]Adjust   [/dim]  [white]netshape adjust --profile 2g[/white]"
+        )
+
+    lines.append("")
+    lines.append("  [dim]Press Ctrl-C to stop.[/dim]")
+
+    console.print(
+        Panel(
+            "\n".join(lines),
+            box=box.ROUNDED,
+            border_style="cyan",
+            padding=(0, 1),
+        )
+    )
+    console.print()
 
 
 # ── Log file setup ────────────────────────────────────────────────────────────
