@@ -12,6 +12,26 @@ const labels = Array.from({ length: HISTORY_POINTS }, (_, i) =>
 
 let throughputChart, latencyChart;
 
+const CHART_OPTS = {
+  responsive: true,
+  maintainAspectRatio: false,
+  animation: false,
+  scales: {
+    y: {
+      beginAtZero: true,
+      grid:  { color: 'rgba(255,255,255,0.04)', drawBorder: false },
+      ticks: { color: '#6b7fa8', font: { size: 10 }, maxTicksLimit: 5 },
+      border: { display: false },
+    },
+    x: {
+      grid:  { color: 'rgba(255,255,255,0.04)', drawBorder: false },
+      ticks: { color: '#6b7fa8', font: { size: 10 }, maxTicksLimit: 6 },
+      border: { display: false },
+    },
+  },
+  plugins: { legend: { display: false } },
+};
+
 if (throughputCtx) {
   throughputChart = new Chart(throughputCtx, {
     type: 'line',
@@ -21,8 +41,9 @@ if (throughputCtx) {
         {
           label: 'Download',
           data: Array(HISTORY_POINTS).fill(null),
-          borderColor: '#4fc3f7',
-          backgroundColor: 'rgba(79, 195, 247, 0.1)',
+          borderColor: '#38bdf8',
+          backgroundColor: 'rgba(56, 189, 248, 0.08)',
+          borderWidth: 1.5,
           pointRadius: 0,
           tension: 0.4,
           fill: true,
@@ -30,8 +51,9 @@ if (throughputCtx) {
         {
           label: 'Upload',
           data: Array(HISTORY_POINTS).fill(null),
-          borderColor: '#81c784',
-          backgroundColor: 'rgba(129, 199, 132, 0.1)',
+          borderColor: '#34d399',
+          backgroundColor: 'rgba(52, 211, 153, 0.08)',
+          borderWidth: 1.5,
           pointRadius: 0,
           tension: 0.4,
           fill: true,
@@ -39,22 +61,11 @@ if (throughputCtx) {
       ],
     },
     options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      animation: false,
+      ...CHART_OPTS,
       scales: {
-        y: {
-          beginAtZero: true,
-          title: { display: true, text: 'Mbps' },
-          grid: { color: 'rgba(255,255,255,0.05)' },
-          ticks: { color: '#a0a0a0' },
-        },
-        x: {
-          grid: { color: 'rgba(255,255,255,0.05)' },
-          ticks: { color: '#a0a0a0', maxTicksLimit: 6 },
-        },
+        ...CHART_OPTS.scales,
+        y: { ...CHART_OPTS.scales.y, title: { display: true, text: 'Mbps', color: '#6b7fa8', font: { size: 10 } } },
       },
-      plugins: { legend: { labels: { color: '#e0e0e0' } } },
     },
   });
 }
@@ -68,8 +79,9 @@ if (latencyCtx) {
         {
           label: 'RTT',
           data: Array(HISTORY_POINTS).fill(null),
-          borderColor: '#ffb74d',
-          backgroundColor: 'rgba(255, 183, 77, 0.1)',
+          borderColor: '#fb923c',
+          backgroundColor: 'rgba(251, 146, 60, 0.08)',
+          borderWidth: 1.5,
           pointRadius: 0,
           tension: 0.4,
           fill: true,
@@ -77,22 +89,11 @@ if (latencyCtx) {
       ],
     },
     options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      animation: false,
+      ...CHART_OPTS,
       scales: {
-        y: {
-          beginAtZero: true,
-          title: { display: true, text: 'ms' },
-          grid: { color: 'rgba(255,255,255,0.05)' },
-          ticks: { color: '#a0a0a0' },
-        },
-        x: {
-          grid: { color: 'rgba(255,255,255,0.05)' },
-          ticks: { color: '#a0a0a0', maxTicksLimit: 6 },
-        },
+        ...CHART_OPTS.scales,
+        y: { ...CHART_OPTS.scales.y, title: { display: true, text: 'ms', color: '#6b7fa8', font: { size: 10 } } },
       },
-      plugins: { legend: { labels: { color: '#e0e0e0' } } },
     },
   });
 }
@@ -190,6 +191,15 @@ function bpsToSlider(bps) {
     : Math.round(bps / 1_000_000);
 }
 
+/** Sync the CSS --fill variable so the slider track shows a filled portion. */
+function syncFill(slider) {
+  const min = parseFloat(slider.min) || 0;
+  const max = parseFloat(slider.max) || 100;
+  const val = parseFloat(slider.value) || 0;
+  const pct = ((val - min) / (max - min)) * 100;
+  slider.style.setProperty('--fill', `${pct.toFixed(1)}%`);
+}
+
 function updateSliderLabels() {
   const v = parseInt(els.bwSlider.value, 10);
   if (v === 0) {
@@ -200,6 +210,10 @@ function updateSliderLabels() {
   els.latValueControl.textContent = `${els.latSlider.value} ms`;
   els.lossValueControl.textContent = `${els.lossSlider.value}%`;
   els.jitterValueControl.textContent = `${els.jitterSlider.value} ms`;
+  syncFill(els.bwSlider);
+  syncFill(els.latSlider);
+  syncFill(els.lossSlider);
+  syncFill(els.jitterSlider);
 }
 
 function setSlidersFromProfile(profileName) {
