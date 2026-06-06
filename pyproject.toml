@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "netshape"
-version = "0.1.0"
+version = "1.0.0"
 description = "Local throttling proxy for testing apps under degraded network conditions."
 readme = "README.md"
 requires-python = ">=3.10"
