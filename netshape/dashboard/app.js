@@ -12,6 +12,26 @@ const labels = Array.from({ length: HISTORY_POINTS }, (_, i) =>
 
 let throughputChart, latencyChart;
 
+const CHART_OPTS = {
+  responsive: true,
+  maintainAspectRatio: false,
+  animation: false,
+  scales: {
+    y: {
+      beginAtZero: true,
+      grid:  { color: 'rgba(255,255,255,0.04)', drawBorder: false },
+      ticks: { color: '#6b7fa8', font: { size: 10 }, maxTicksLimit: 5 },
+      border: { display: false },
+    },
+    x: {
+      grid:  { color: 'rgba(255,255,255,0.04)', drawBorder: false },
+      ticks: { color: '#6b7fa8', font: { size: 10 }, maxTicksLimit: 6 },
+      border: { display: false },
+    },
+  },
+  plugins: { legend: { display: false } },
+};
+
 if (throughputCtx) {
   throughputChart = new Chart(throughputCtx, {
     type: 'line',
@@ -21,8 +41,9 @@ if (throughputCtx) {
         {
           label: 'Download',
           data: Array(HISTORY_POINTS).fill(null),
-          borderColor: '#4fc3f7',
-          backgroundColor: 'rgba(79, 195, 247, 0.1)',
+          borderColor: '#22d3ee',
+          backgroundColor: 'rgba(34, 211, 238, 0.07)',
+          borderWidth: 1.5,
           pointRadius: 0,
           tension: 0.4,
           fill: true,
@@ -30,8 +51,9 @@ if (throughputCtx) {
         {
           label: 'Upload',
           data: Array(HISTORY_POINTS).fill(null),
-          borderColor: '#81c784',
-          backgroundColor: 'rgba(129, 199, 132, 0.1)',
+          borderColor: '#34d399',
+          backgroundColor: 'rgba(52, 211, 153, 0.08)',
+          borderWidth: 1.5,
           pointRadius: 0,
           tension: 0.4,
           fill: true,
@@ -39,22 +61,11 @@ if (throughputCtx) {
       ],
     },
     options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      animation: false,
+      ...CHART_OPTS,
       scales: {
-        y: {
-          beginAtZero: true,
-          title: { display: true, text: 'Mbps' },
-          grid: { color: 'rgba(255,255,255,0.05)' },
-          ticks: { color: '#a0a0a0' },
-        },
-        x: {
-          grid: { color: 'rgba(255,255,255,0.05)' },
-          ticks: { color: '#a0a0a0', maxTicksLimit: 6 },
-        },
+        ...CHART_OPTS.scales,
+        y: { ...CHART_OPTS.scales.y, title: { display: true, text: 'Mbps', color: '#6b7fa8', font: { size: 10 } } },
       },
-      plugins: { legend: { labels: { color: '#e0e0e0' } } },
     },
   });
 }
@@ -68,8 +79,9 @@ if (latencyCtx) {
         {
           label: 'RTT',
           data: Array(HISTORY_POINTS).fill(null),
-          borderColor: '#ffb74d',
-          backgroundColor: 'rgba(255, 183, 77, 0.1)',
+          borderColor: '#fb923c',
+          backgroundColor: 'rgba(251, 146, 60, 0.08)',
+          borderWidth: 1.5,
           pointRadius: 0,
           tension: 0.4,
           fill: true,
@@ -77,22 +89,11 @@ if (latencyCtx) {
       ],
     },
     options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      animation: false,
+      ...CHART_OPTS,
       scales: {
-        y: {
-          beginAtZero: true,
-          title: { display: true, text: 'ms' },
-          grid: { color: 'rgba(255,255,255,0.05)' },
-          ticks: { color: '#a0a0a0' },
-        },
-        x: {
-          grid: { color: 'rgba(255,255,255,0.05)' },
-          ticks: { color: '#a0a0a0', maxTicksLimit: 6 },
-        },
+        ...CHART_OPTS.scales,
+        y: { ...CHART_OPTS.scales.y, title: { display: true, text: 'ms', color: '#6b7fa8', font: { size: 10 } } },
       },
-      plugins: { legend: { labels: { color: '#e0e0e0' } } },
     },
   });
 }
@@ -172,12 +173,9 @@ function clearSlidersDirty() {
 // ─── BANDWIDTH UNIT STATE ─────────────────────────────────────────────────
 let bwUnit = 'mbps'; // 'mbps' | 'kbps'
 
-const profiles = {
-  none:      { bandwidth_bps: 0,       latency_ms: 0,   loss_pct: 0,     jitter_ms: 0  },
-  '3g':      { bandwidth_bps: 1500000, latency_ms: 100, loss_pct: 0.01,  jitter_ms: 20 },
-  edge:      { bandwidth_bps: 250000,  latency_ms: 300, loss_pct: 0.02,  jitter_ms: 50 },
-  satellite: { bandwidth_bps: 5000000, latency_ms: 650, loss_pct: 0.005, jitter_ms: 80 },
-  dsl:       { bandwidth_bps: 5000000, latency_ms: 30,  loss_pct: 0.001, jitter_ms: 5  },
+// Profiles are fetched from the server on load so they always match server values.
+let profiles = {
+  none: { bandwidth_bps: 0, latency_ms: 0, loss_pct: 0, jitter_ms: 0 },
 };
 
 /** Convert the current bandwidth slider value to bps, respecting bwUnit. */
@@ -193,6 +191,15 @@ function bpsToSlider(bps) {
     : Math.round(bps / 1_000_000);
 }
 
+/** Sync the CSS --fill variable so the slider track shows a filled portion. */
+function syncFill(slider) {
+  const min = parseFloat(slider.min) || 0;
+  const max = parseFloat(slider.max) || 100;
+  const val = parseFloat(slider.value) || 0;
+  const pct = ((val - min) / (max - min)) * 100;
+  slider.style.setProperty('--fill', `${pct.toFixed(1)}%`);
+}
+
 function updateSliderLabels() {
   const v = parseInt(els.bwSlider.value, 10);
   if (v === 0) {
@@ -203,6 +210,10 @@ function updateSliderLabels() {
   els.latValueControl.textContent = `${els.latSlider.value} ms`;
   els.lossValueControl.textContent = `${els.lossSlider.value}%`;
   els.jitterValueControl.textContent = `${els.jitterSlider.value} ms`;
+  syncFill(els.bwSlider);
+  syncFill(els.latSlider);
+  syncFill(els.lossSlider);
+  syncFill(els.jitterSlider);
 }
 
 function setSlidersFromProfile(profileName) {
@@ -215,9 +226,70 @@ function setSlidersFromProfile(profileName) {
   updateSliderLabels();
 }
 
+async function applyProfile(profileName) {
+  const p = profiles[profileName];
+  if (!p) return;
+  setSlidersFromProfile(profileName);
+  // Auto-apply to the server so live status reflects immediately.
+  try {
+    const res = await fetch('/configure', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        bandwidth_bps: p.bandwidth_bps,
+        latency_ms: p.latency_ms,
+        loss_pct: p.loss_pct,
+        jitter_ms: p.jitter_ms,
+      }),
+    });
+    const data = await res.json();
+    updateConfigDisplay(data);
+    clearSlidersDirty();
+  } catch (err) {
+    console.error('Failed to apply profile:', err);
+  }
+}
+
+async function loadProfiles() {
+  try {
+    const res = await fetch('/profiles');
+    if (!res.ok) return;
+    const data = await res.json();
+    // Merge server profiles into local object; keep 'none' sentinel.
+    Object.assign(profiles, data);
+
+    // Rebuild dropdown from server data so all profiles are present.
+    if (!els.profileSelect) return;
+    // Clear existing options except the placeholder.
+    els.profileSelect.innerHTML = '<option value="none">— none —</option>';
+    // Sort by bandwidth ascending for a natural ordering.
+    const names = Object.keys(data).sort(
+      (a, b) => (data[a].bandwidth_bps || 0) - (data[b].bandwidth_bps || 0)
+    );
+    names.forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      const bps = data[name].bandwidth_bps;
+      const bwStr = bps >= 1_000_000
+        ? `${(bps / 1_000_000).toFixed(0)} Mbps`
+        : bps >= 1_000 ? `${(bps / 1_000).toFixed(0)} kbps` : 'blocked';
+      opt.textContent = `${name}  (${bwStr}, ${data[name].latency_ms}ms)`;
+      els.profileSelect.appendChild(opt);
+    });
+  } catch (err) {
+    console.error('Failed to load profiles:', err);
+  }
+}
+
 // ─── SLIDER / UNIT EVENT LISTENERS ───────────────────────────────────────
 els.profileSelect.addEventListener('change', () => {
-  setSlidersFromProfile(els.profileSelect.value);
+  const v = els.profileSelect.value;
+  if (v === 'none') {
+    // 'none' just clears sliders to 0 locally — user can then adjust.
+    setSlidersFromProfile('none');
+  } else {
+    applyProfile(v);
+  }
 });
 
 [els.bwSlider, els.latSlider, els.lossSlider, els.jitterSlider].forEach(s => {
@@ -839,6 +911,7 @@ document.getElementById('add-rule-submit-btn')?.addEventListener('click', async 
 // ─── INIT ─────────────────────────────────────────────────────────────────
 (async function init() {
   updateSliderLabels();
+  loadProfiles();
   loadBuiltinScenarios();
   refreshRules();
   setInterval(refreshRules, 5000);

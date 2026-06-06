@@ -4,129 +4,206 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>NetShape Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/dashboard/style.css">
 </head>
 <body>
-  <div class="container">
-    <!-- LEFT COLUMN -->
-    <div class="column left">
-      <div id="status-banner" class="status-banner normal">
-        Offline
+
+  <!-- ── TOPBAR ──────────────────────────────────────────────────────────── -->
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <polygon points="12,2.5 21,7.5 21,16.5 12,21.5 3,16.5 3,7.5"
+                 stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"
+                 fill="rgba(34,211,238,0.1)"/>
+        <circle cx="12" cy="12" r="2.2" fill="currentColor"/>
+        <line x1="12" y1="2.5"  x2="12" y2="9.8"   stroke="currentColor" stroke-width="1" stroke-opacity="0.4"/>
+        <line x1="21" y1="7.5"  x2="14.2" y2="12"  stroke="currentColor" stroke-width="1" stroke-opacity="0.4"/>
+        <line x1="21" y1="16.5" x2="14.2" y2="12"  stroke="currentColor" stroke-width="1" stroke-opacity="0.4"/>
+        <line x1="3"  y1="7.5"  x2="9.8" y2="12"   stroke="currentColor" stroke-width="1" stroke-opacity="0.4"/>
+        <line x1="3"  y1="16.5" x2="9.8" y2="12"   stroke="currentColor" stroke-width="1" stroke-opacity="0.4"/>
+        <line x1="12" y1="21.5" x2="12" y2="14.2"  stroke="currentColor" stroke-width="1" stroke-opacity="0.4"/>
+      </svg>
+      <span class="brand-name">Net<span class="brand-accent">Shape</span></span>
+    </div>
+
+    <div class="topbar-center">
+      <div id="status-banner" class="status-banner offline">⚪ Connecting…</div>
+    </div>
+
+    <div class="topbar-end">
+      <div id="proxy-status-dot" class="status-dot"></div>
+      <span id="proxy-status-text">Disconnected</span>
+    </div>
+  </header>
+
+  <!-- ── WORKSPACE ───────────────────────────────────────────────────────── -->
+  <div class="workspace">
+
+    <!-- ── LEFT COLUMN ───────────────────────────────────────────────────── -->
+    <div class="col-left">
+
+      <!-- Metric Cards -->
+      <div class="metric-grid">
+        <div class="metric-card dl">
+          <div class="metric-header">
+            <span class="metric-icon">↓</span>
+            <span class="metric-label">Download</span>
+          </div>
+          <div class="metric-body">
+            <span id="dl-value" class="metric-value">--</span>
+            <span id="dl-unit" class="metric-unit">Mbps</span>
+          </div>
+        </div>
+
+        <div class="metric-card ul">
+          <div class="metric-header">
+            <span class="metric-icon">↑</span>
+            <span class="metric-label">Upload</span>
+          </div>
+          <div class="metric-body">
+            <span id="ul-value" class="metric-value">--</span>
+            <span id="ul-unit" class="metric-unit">Mbps</span>
+          </div>
+        </div>
+
+        <div class="metric-card lat">
+          <div class="metric-header">
+            <span class="metric-icon">◎</span>
+            <span class="metric-label">Latency</span>
+          </div>
+          <div class="metric-body">
+            <span id="lat-value" class="metric-value">--</span>
+            <span class="metric-unit">ms</span>
+          </div>
+        </div>
+
+        <div class="metric-card pkt">
+          <div class="metric-header">
+            <span class="metric-icon">⚡</span>
+            <span class="metric-label">Loss</span>
+          </div>
+          <div class="metric-body">
+            <span id="loss-value" class="metric-value">--</span>
+            <span class="metric-unit">%</span>
+          </div>
+        </div>
       </div>
 
-      <div class="metric-cards">
-        <div class="metric-card">
-          <div class="metric-label">Download</div>
-          <div id="dl-value" class="metric-value blue">--</div>
-          <div id="dl-unit" class="metric-label">Mbps</div>
+      <!-- Throughput Chart -->
+      <div class="card chart-card">
+        <div class="card-header">
+          <span class="card-title">Throughput</span>
+          <div class="chart-legend">
+            <span class="legend-dot" style="background:#22d3ee"></span><span>Download</span>
+            <span class="legend-dot" style="background:#34d399"></span><span>Upload</span>
+          </div>
         </div>
-        <div class="metric-card">
-          <div class="metric-label">Upload</div>
-          <div id="ul-value" class="metric-value green">--</div>
-          <div id="ul-unit" class="metric-label">Mbps</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-label">Latency</div>
-          <div id="lat-value" class="metric-value orange">--</div>
-          <div class="metric-label">ms</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-label">Loss</div>
-          <div id="loss-value" class="metric-value red">--</div>
-          <div class="metric-label">%</div>
+        <div class="chart-wrap">
+          <canvas id="throughput-chart"></canvas>
         </div>
       </div>
 
-      <div class="chart-container">
-        <canvas id="throughput-chart"></canvas>
+      <!-- Latency Chart -->
+      <div class="card chart-card">
+        <div class="card-header">
+          <span class="card-title">Latency</span>
+          <div class="chart-legend">
+            <span class="legend-dot" style="background:#fb923c"></span><span>RTT</span>
+          </div>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="latency-chart"></canvas>
+        </div>
       </div>
 
-      <div class="chart-container">
-        <canvas id="latency-chart"></canvas>
-      </div>
-
-      <div class="panel log-panel">
-        <div class="panel-header">
-          <span class="panel-title">Proxy Log</span>
-          <span id="log-count" class="log-count"></span>
+      <!-- Log Viewer -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Proxy Log</span>
+          <span id="log-count" class="log-badge"></span>
         </div>
         <div id="log-viewer" class="log-viewer"></div>
       </div>
-    </div>
 
-    <!-- RIGHT COLUMN (scrollable) -->
-    <div class="column right">
+    </div><!-- /col-left -->
+
+    <!-- ── RIGHT COLUMN ──────────────────────────────────────────────────── -->
+    <div class="col-right">
 
       <!-- Network Profile -->
-      <div class="panel">
-        <div class="panel-title">Network Profile</div>
-        <div class="form-group">
-          <select id="profile-select">
-            <option value="none">none</option>
-            <option value="3g">3g</option>
-            <option value="edge">edge</option>
-            <option value="satellite">satellite</option>
-            <option value="dsl">dsl</option>
-          </select>
-        </div>
+      <div class="card">
+        <div class="panel-title" style="margin-bottom:10px">Network Profile</div>
+        <select id="profile-select" class="select">
+          <option value="none">— none —</option>
+        </select>
       </div>
 
-      <!-- Manual Controls -->
-      <div class="panel">
-        <div class="panel-title">Controls</div>
-        <div class="form-group">
-          <div class="form-label">
-            <span>Bandwidth</span>
-            <div class="bw-label-right">
-              <span id="bw-value" class="value">Unlimited</span>
-              <select id="bw-unit-select" class="unit-toggle">
+      <!-- Controls -->
+      <div class="card">
+        <div class="panel-title" style="margin-bottom:16px">Controls</div>
+
+        <div class="slider-group">
+          <div class="slider-header">
+            <span class="slider-label">Bandwidth</span>
+            <div class="slider-right">
+              <span id="bw-value" class="slider-value">Unlimited</span>
+              <select id="bw-unit-select" class="unit-select">
                 <option value="mbps">Mbps</option>
                 <option value="kbps">kbps</option>
               </select>
             </div>
           </div>
-          <input type="range" id="bw-slider" min="0" max="200" value="0">
+          <input type="range" id="bw-slider" class="slider" min="0" max="200" value="0">
         </div>
-        <div class="form-group">
-          <div class="form-label">
-            <span>Latency</span>
-            <span id="lat-value-control" class="value">0 ms</span>
+
+        <div class="slider-group">
+          <div class="slider-header">
+            <span class="slider-label">Latency</span>
+            <span id="lat-value-control" class="slider-value">0 ms</span>
           </div>
-          <input type="range" id="lat-slider" min="0" max="1000" value="0">
+          <input type="range" id="lat-slider" class="slider" min="0" max="1000" value="0">
         </div>
-        <div class="form-group">
-          <div class="form-label">
-            <span>Loss</span>
-            <span id="loss-value-control" class="value">0 %</span>
+
+        <div class="slider-group">
+          <div class="slider-header">
+            <span class="slider-label">Packet Loss</span>
+            <span id="loss-value-control" class="slider-value">0 %</span>
           </div>
-          <input type="range" id="loss-slider" min="0" max="50" step="0.1" value="0">
+          <input type="range" id="loss-slider" class="slider" min="0" max="100" step="0.1" value="0">
         </div>
-        <div class="form-group">
-          <div class="form-label">
-            <span>Jitter</span>
-            <span id="jitter-value-control" class="value">0 ms</span>
+
+        <div class="slider-group">
+          <div class="slider-header">
+            <span class="slider-label">Jitter</span>
+            <span id="jitter-value-control" class="slider-value">0 ms</span>
           </div>
-          <input type="range" id="jitter-slider" min="0" max="200" value="0">
+          <input type="range" id="jitter-slider" class="slider" min="0" max="200" value="0">
         </div>
-        <button id="apply-btn">Apply Changes</button>
-        <div class="status-indicator">
-          <div id="proxy-status-dot" class="status-dot"></div>
-          <span id="proxy-status-text">Disconnected</span>
+
+        <button id="apply-btn" class="btn-primary">Apply Changes</button>
+
+        <div class="conn-bar">
+          <div id="_status-dot-ctrl" style="display:none"></div>
+          <div id="_status-text-ctrl" style="display:none"></div>
         </div>
       </div>
 
-      <!-- Current Config (collapsible) -->
-      <details class="panel details-panel">
+      <!-- Current Config -->
+      <details class="card details-panel">
         <summary class="panel-title">Current Config</summary>
-        <div id="config-display" class="config-display">Loading...</div>
+        <div id="config-display" class="config-display">Loading…</div>
       </details>
 
       <!-- Per-Endpoint Rules -->
-      <div class="panel" id="rules-panel">
+      <div class="card">
         <div class="panel-header">
           <span class="panel-title">Per-Endpoint Rules</span>
           <button id="toggle-rule-form-btn" class="btn-small">+ Add</button>
         </div>
+
         <div id="rules-list">
           <div class="rules-empty">No rules active.</div>
         </div>
@@ -178,7 +255,7 @@
             <input type="text" id="rule-comment-input" class="text-input" placeholder="e.g. Slow API" />
           </div>
           <div class="form-row btn-row">
-            <button id="add-rule-submit-btn">Add Rule</button>
+            <button id="add-rule-submit-btn" class="btn-primary" style="padding:8px 12px">Add Rule</button>
             <button id="cancel-rule-btn" class="btn-secondary">Cancel</button>
           </div>
           <div id="rule-msg" class="msg-line"></div>
@@ -186,32 +263,29 @@
       </div>
 
       <!-- Scenarios -->
-      <div class="panel" id="scenario-panel">
-        <div class="panel-title">Scenarios</div>
+      <div class="card">
+        <div class="panel-title" style="margin-bottom:14px">Scenarios</div>
 
-        <!-- Built-in -->
         <div id="scenario-idle-controls">
           <div class="form-group">
             <label class="form-label-sm">Built-in</label>
-            <select id="scenario-select">
+            <select id="scenario-select" class="select">
               <option value="">— select —</option>
             </select>
           </div>
-          <button id="run-scenario-btn" disabled>Run Built-in</button>
+          <button id="run-scenario-btn" class="btn-primary" disabled style="margin-top:8px">▶&nbsp; Run Scenario</button>
         </div>
 
-        <!-- Running state -->
         <div id="scenario-running" style="display:none">
           <div class="scenario-name" id="scenario-name-display"></div>
           <div class="scenario-phase" id="scenario-phase-display"></div>
           <progress id="scenario-progress" class="scenario-progress" value="0" max="100"></progress>
           <div class="scenario-time" id="scenario-time-display"></div>
-          <button id="stop-scenario-btn" class="btn-danger">Stop Scenario</button>
+          <button id="stop-scenario-btn" class="btn-danger">■&nbsp; Stop Scenario</button>
         </div>
 
         <div id="scenario-status-msg" class="msg-line"></div>
 
-        <!-- Custom scenario builder -->
         <div class="section-divider"></div>
         <div class="panel-subtitle">Build Custom Scenario</div>
 
@@ -220,20 +294,18 @@
           <input type="text" id="custom-scenario-name" class="text-input" placeholder="My Scenario" />
         </div>
 
-        <div id="custom-phases-list">
-          <!-- Phase rows injected by JS -->
-        </div>
+        <div id="custom-phases-list"></div>
 
         <div class="form-row btn-row" style="margin-top:8px">
           <button id="add-phase-btn" class="btn-secondary">+ Phase</button>
-          <button id="run-custom-btn">▶ Run</button>
+          <button id="run-custom-btn" class="btn-primary" style="padding:8px">▶ Run</button>
           <button id="save-custom-btn" class="btn-secondary">💾 Save</button>
         </div>
         <div id="custom-scenario-msg" class="msg-line"></div>
       </div>
 
-    </div><!-- /right -->
-  </div>
+    </div><!-- /col-right -->
+  </div><!-- /workspace -->
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="/dashboard/app.js"></script>
