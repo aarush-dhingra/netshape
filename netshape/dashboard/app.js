@@ -41,8 +41,8 @@ if (throughputCtx) {
         {
           label: 'Download',
           data: Array(HISTORY_POINTS).fill(null),
-          borderColor: '#38bdf8',
-          backgroundColor: 'rgba(56, 189, 248, 0.08)',
+          borderColor: '#22d3ee',
+          backgroundColor: 'rgba(34, 211, 238, 0.07)',
           borderWidth: 1.5,
           pointRadius: 0,
           tension: 0.4,
