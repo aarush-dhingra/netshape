@@ -684,13 +684,10 @@ def _make_watch_table(payload: dict) -> "Table":
 def _print_startup_banner(state: "SessionState") -> None:
     """Print a rich startup banner after the proxy is ready."""
     from rich.console import Console
-    from rich.panel import Panel
-    from rich import box
 
     console = Console(stderr=True)
 
     dashboard_url = f"http://127.0.0.1:{state.control_port}/dashboard"
-    clickable = f"\033]8;;{dashboard_url}\033\\{dashboard_url}\033]8;;\033\\"
 
     profile_str = state.profile or "custom"
     bw_str = _format_bps(int(state.bandwidth_bps or 0))
@@ -698,44 +695,40 @@ def _print_startup_banner(state: "SessionState") -> None:
     loss_str = f"{float(state.loss_pct or 0) * 100:g}%"
     jitter_str = f"{state.jitter_ms} ms"
 
-    lines = [
-        f"[bold green] NetShape is active[/bold green]  [dim]·[/dim]  "
-        f"[cyan]{profile_str}[/cyan]",
-        "",
-        f"  [dim]Bandwidth[/dim]  [white]{bw_str}[/white]  "
-        f"[dim]Latency[/dim]  [white]{lat_str}[/white]  "
-        f"[dim]Loss[/dim]  [white]{loss_str}[/white]  "
-        f"[dim]Jitter[/dim]  [white]{jitter_str}[/white]",
-        "",
-    ]
+    console.print()
+    console.rule("[bold cyan]NetShape[/bold cyan]", style="cyan dim")
+    console.print()
+    console.print(
+        f"  [bold green]✓  NetShape is active[/bold green]"
+        f"  [dim]·[/dim]  [cyan]{profile_str}[/cyan]"
+    )
+    console.print()
+    console.print(
+        f"  [dim]Bandwidth[/dim]  [white]{bw_str}[/white]   "
+        f"[dim]Latency[/dim]  [white]{lat_str}[/white]   "
+        f"[dim]Loss[/dim]  [white]{loss_str}[/white]   "
+        f"[dim]Jitter[/dim]  [white]{jitter_str}[/white]"
+    )
+    console.print()
 
     if is_dashboard_enabled():
-        lines.append(
-            f"  [dim]Dashboard[/dim]  [underline cyan]{clickable}[/underline cyan]"
-        )
-        lines.append(
-            f"  [dim]Adjust   [/dim]  [white]netshape adjust --profile 2g[/white]"
+        console.print(
+            f"  [dim]Dashboard[/dim]  "
+            f"[link={dashboard_url}][cyan]{dashboard_url}[/cyan][/link]"
         )
     else:
-        lines.append(
-            "  [dim]Dashboard[/dim]  [yellow]disabled[/yellow]  "
-            "[dim](run netshape setup to enable)[/dim]"
+        console.print(
+            "  [dim]Dashboard[/dim]  [yellow]disabled[/yellow]"
+            "  [dim]· run netshape setup to enable[/dim]"
         )
-        lines.append(
-            f"  [dim]Adjust   [/dim]  [white]netshape adjust --profile 2g[/white]"
-        )
-
-    lines.append("")
-    lines.append("  [dim]Press Ctrl-C to stop.[/dim]")
 
     console.print(
-        Panel(
-            "\n".join(lines),
-            box=box.ROUNDED,
-            border_style="cyan",
-            padding=(0, 1),
-        )
+        "  [dim]Adjust   [/dim]  [white]netshape adjust --profile 2g[/white]"
     )
+    console.print()
+    console.print("  [dim]Press Ctrl-C to stop.[/dim]")
+    console.print()
+    console.rule(style="cyan dim")
     console.print()
 
 
