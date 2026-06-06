@@ -172,12 +172,9 @@ function clearSlidersDirty() {
 // ─── BANDWIDTH UNIT STATE ─────────────────────────────────────────────────
 let bwUnit = 'mbps'; // 'mbps' | 'kbps'
 
-const profiles = {
-  none:      { bandwidth_bps: 0,       latency_ms: 0,   loss_pct: 0,     jitter_ms: 0  },
-  '3g':      { bandwidth_bps: 1500000, latency_ms: 100, loss_pct: 0.01,  jitter_ms: 20 },
-  edge:      { bandwidth_bps: 250000,  latency_ms: 300, loss_pct: 0.02,  jitter_ms: 50 },
-  satellite: { bandwidth_bps: 5000000, latency_ms: 650, loss_pct: 0.005, jitter_ms: 80 },
-  dsl:       { bandwidth_bps: 5000000, latency_ms: 30,  loss_pct: 0.001, jitter_ms: 5  },
+// Profiles are fetched from the server on load so they always match server values.
+let profiles = {
+  none: { bandwidth_bps: 0, latency_ms: 0, loss_pct: 0, jitter_ms: 0 },
 };
 
 /** Convert the current bandwidth slider value to bps, respecting bwUnit. */
@@ -215,9 +212,70 @@ function setSlidersFromProfile(profileName) {
   updateSliderLabels();
 }
 
+async function applyProfile(profileName) {
+  const p = profiles[profileName];
+  if (!p) return;
+  setSlidersFromProfile(profileName);
+  // Auto-apply to the server so live status reflects immediately.
+  try {
+    const res = await fetch('/configure', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        bandwidth_bps: p.bandwidth_bps,
+        latency_ms: p.latency_ms,
+        loss_pct: p.loss_pct,
+        jitter_ms: p.jitter_ms,
+      }),
+    });
+    const data = await res.json();
+    updateConfigDisplay(data);
+    clearSlidersDirty();
+  } catch (err) {
+    console.error('Failed to apply profile:', err);
+  }
+}
+
+async function loadProfiles() {
+  try {
+    const res = await fetch('/profiles');
+    if (!res.ok) return;
+    const data = await res.json();
+    // Merge server profiles into local object; keep 'none' sentinel.
+    Object.assign(profiles, data);
+
+    // Rebuild dropdown from server data so all profiles are present.
+    if (!els.profileSelect) return;
+    // Clear existing options except the placeholder.
+    els.profileSelect.innerHTML = '<option value="none">— none —</option>';
+    // Sort by bandwidth ascending for a natural ordering.
+    const names = Object.keys(data).sort(
+      (a, b) => (data[a].bandwidth_bps || 0) - (data[b].bandwidth_bps || 0)
+    );
+    names.forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      const bps = data[name].bandwidth_bps;
+      const bwStr = bps >= 1_000_000
+        ? `${(bps / 1_000_000).toFixed(0)} Mbps`
+        : bps >= 1_000 ? `${(bps / 1_000).toFixed(0)} kbps` : 'blocked';
+      opt.textContent = `${name}  (${bwStr}, ${data[name].latency_ms}ms)`;
+      els.profileSelect.appendChild(opt);
+    });
+  } catch (err) {
+    console.error('Failed to load profiles:', err);
+  }
+}
+
 // ─── SLIDER / UNIT EVENT LISTENERS ───────────────────────────────────────
 els.profileSelect.addEventListener('change', () => {
-  setSlidersFromProfile(els.profileSelect.value);
+  const v = els.profileSelect.value;
+  if (v === 'none') {
+    // 'none' just clears sliders to 0 locally — user can then adjust.
+    setSlidersFromProfile('none');
+  } else {
+    applyProfile(v);
+  }
 });
 
 [els.bwSlider, els.latSlider, els.lossSlider, els.jitterSlider].forEach(s => {
@@ -839,6 +897,7 @@ document.getElementById('add-rule-submit-btn')?.addEventListener('click', async 
 // ─── INIT ─────────────────────────────────────────────────────────────────
 (async function init() {
   updateSliderLabels();
+  loadProfiles();
   loadBuiltinScenarios();
   refreshRules();
   setInterval(refreshRules, 5000);

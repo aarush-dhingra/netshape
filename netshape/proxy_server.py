@@ -16,6 +16,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 
+from .profiles import load_builtin_profiles
 from .throttle import TokenBucket, calculate_delay_seconds, should_drop_chunk
 
 logger = logging.getLogger("netshape.proxy")
@@ -802,6 +803,19 @@ class ThrottledProxy:
                 await self._send_json(writer, state.to_dict())
             elif method == "GET" and path == "/scenario/status":
                 await self._send_json(writer, self._scenario_state.to_dict())
+            # ── Profiles ───────────────────────────────────────────────────
+            elif method == "GET" and path == "/profiles":
+                profiles = load_builtin_profiles()
+                await self._send_json(writer, {
+                    name: {
+                        "bandwidth_bps": p.bandwidth_bps,
+                        "latency_ms": p.latency_ms,
+                        "loss_pct": p.loss_pct,
+                        "jitter_ms": p.jitter_ms,
+                        "description": p.description,
+                    }
+                    for name, p in profiles.items()
+                })
             # ── Metrics ────────────────────────────────────────────────────
             elif method == "GET" and path.startswith("/metrics"):
                 await self._serve_metrics(writer, path)
@@ -814,7 +828,7 @@ class ThrottledProxy:
             elif method == "GET" and path.startswith("/dashboard"):
                 await self._serve_dashboard(writer, path)
             elif method == "GET" and path == "/":
-                await self._serve_dashboard(writer, "/dashboard/index.html")
+                await self._serve_dashboard(writer, "/")
             else:
                 await self._send_json(writer, {"error": "not found"}, status=404)
         except Exception as exc:
@@ -966,7 +980,28 @@ class ThrottledProxy:
 
     async def _serve_dashboard(self, writer: asyncio.StreamWriter, path: str) -> None:
         logger.debug("Dashboard request: %s", path)
+
+        # Check user preference — if dashboard was opted out during setup, return a
+        # helpful plain-text page rather than a 404.
+        from .core import is_dashboard_enabled
+        if not is_dashboard_enabled():
+            body = (
+                b"<!DOCTYPE html><html><head><title>NetShape</title></head><body>"
+                b"<h2>Web Dashboard is disabled</h2>"
+                b"<p>You opted out of the web dashboard during setup.</p>"
+                b"<p>To enable it, run: <code>netshape setup</code></p>"
+                b"</body></html>"
+            )
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
+                + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+                + body
+            )
+            await writer.drain()
+            return
+
         file_map = {
+            "/": "index.html",
             "/dashboard": "index.html",
             "/dashboard/": "index.html",
             "/dashboard/index.html": "index.html",
