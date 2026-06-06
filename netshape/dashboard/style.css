@@ -378,9 +378,24 @@ body {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7fa8' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 10px center;
+  color-scheme: dark;
 }
 
 .select:focus { border-color: var(--blue); }
+
+.select option,
+.select optgroup {
+  background: #1c2030;
+  color: var(--t1);
+}
+
+.select optgroup {
+  color: var(--t2);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
 
 /* ── SLIDERS ────────────────────────────────────────────────────────────── */
 .slider-group { margin-bottom: 16px; }
@@ -424,9 +439,12 @@ body {
   cursor: pointer;
   outline: none;
   font-family: inherit;
+  color-scheme: dark;
 }
 
 .unit-select:focus { border-color: var(--blue); }
+
+.unit-select option { background: #1c2030; color: var(--t1); }
 
 /* Slider track with fill */
 .slider {
@@ -784,9 +802,11 @@ button:active { transform: scale(0.97); }
   cursor: pointer;
   outline: none;
   font-family: inherit;
+  color-scheme: dark;
 }
 
 .unit-toggle:focus { border-color: var(--blue); }
+.unit-toggle option { background: #1c2030; color: var(--t1); }
 
 .btn-row { gap: 8px; margin-bottom: 0; }
 .btn-row button { flex: 1; }
