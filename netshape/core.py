@@ -26,6 +26,40 @@ DEFAULT_TRAFFIC_PORT = 8090
 DEFAULT_STATE_PATH = Path.home() / ".netshape" / "state.json"
 _NETSHAPE_DIR = Path.home() / ".netshape"
 _RULES_FILE = _NETSHAPE_DIR / "rules.json"
+_CONFIG_FILE = _NETSHAPE_DIR / "config.json"
+
+
+def load_config() -> dict[str, Any]:
+    """Load user preferences from ~/.netshape/config.json."""
+    try:
+        if _CONFIG_FILE.exists():
+            data = json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception:  # nosec B110
+        pass
+    return {}
+
+
+def save_config(config: dict[str, Any]) -> None:
+    """Persist user preferences to ~/.netshape/config.json."""
+    try:
+        _NETSHAPE_DIR.mkdir(parents=True, exist_ok=True)
+        _CONFIG_FILE.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    except Exception:  # nosec B110
+        pass
+
+
+def is_first_run() -> bool:
+    """Return True if the user has never run netshape setup / first-run wizard."""
+    return not _CONFIG_FILE.exists()
+
+
+def is_dashboard_enabled() -> bool:
+    """Return True if the user opted in to the web dashboard."""
+    cfg = load_config()
+    # Default True so existing installs without config keep working.
+    return bool(cfg.get("dashboard", True))
 
 
 def _load_persisted_rules() -> list[dict[str, Any]]:
@@ -123,6 +157,7 @@ def run_session(
     traffic_port: int = DEFAULT_TRAFFIC_PORT,
     control_port: int | None = None,
     state_path: Path = DEFAULT_STATE_PATH,
+    on_ready: Any = None,
 ) -> int:
     if not command:
         raise SessionError("command is required")
@@ -174,6 +209,14 @@ def run_session(
         jitter_ms=settings.jitter_ms,
     )
     write_state(state, state_path)
+
+    # Fire the optional ready callback so the CLI can print a banner before
+    # the child process starts streaming its own output.
+    if on_ready is not None:
+        try:
+            on_ready(state)
+        except Exception:  # nosec B110 – banner failure must never block the session
+            pass
 
     # Restore rules saved from the previous session (best-effort).
     # Rules always start DISABLED so the user can consciously re-enable them.
