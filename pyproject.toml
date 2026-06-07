@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [
-    { name = "NetShape contributors" }
+    { name = "Aarush Dhingra", email = "aarushdhingra27@gmail.com" }
 ]
 keywords = ["network", "proxy", "throttling", "testing", "simulation", "latency", "bandwidth"]
 classifiers = [
@@ -36,9 +36,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/netshape/netshape"
-Source = "https://github.com/netshape/netshape"
-"Bug Tracker" = "https://github.com/netshape/netshape/issues"
+Homepage = "https://github.com/aarush-dhingra/netshape"
+Source = "https://github.com/aarush-dhingra/netshape"
+"Bug Tracker" = "https://github.com/aarush-dhingra/netshape/issues"
 
 [project.optional-dependencies]
 dev = [
@@ -71,3 +71,10 @@ asyncio_mode = "auto"
 [tool.bandit]
 skips = []
 exclude_dirs = ["tests", "test-app"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
