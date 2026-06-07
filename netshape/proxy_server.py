@@ -58,6 +58,7 @@ class _ProxyLogHandler(logging.Handler):
 
 READ_CHUNK_SIZE = 8192
 HEADER_LIMIT = 64 * 1024
+_CONTROL_BODY_LIMIT = 1 * 1024 * 1024  # 1 MB — prevents OOM from oversized POST bodies
 
 
 @dataclass
@@ -735,10 +736,28 @@ class ThrottledProxy:
             header_bytes = await self._read_headers(reader)
             request_line, headers = self._parse_request(header_bytes)
             method, path, _ = request_line.split(" ", 2)
+
+            # ── CSRF / DNS-rebinding protection ───────────────────────────────
+            # Mutating requests from a browser tab on a malicious page would
+            # carry an Origin header pointing to the attacker's site. We reject
+            # any mutating request whose Origin is not our own control port or
+            # absent (CLI callers never send Origin).
+            if method in {"POST", "PATCH", "DELETE"}:
+                origin = headers.get("origin", "")
+                if origin and origin not in {
+                    f"http://127.0.0.1:{self.control_port}",
+                    f"http://localhost:{self.control_port}",
+                }:
+                    await self._send_json(writer, {"error": "forbidden"}, status=403)
+                    return
+
             body = b""
             content_length = int(headers.get("content-length", "0") or "0")
-            if content_length > len(body):
-                body += await reader.readexactly(content_length - len(body))
+            if content_length > _CONTROL_BODY_LIMIT:
+                await self._send_json(writer, {"error": "request body too large"}, status=413)
+                return
+            if content_length > 0:
+                body = await reader.readexactly(content_length)
 
             if method == "GET" and path == "/status":
                 await self._send_json(writer, self._status_payload())
@@ -1117,7 +1136,10 @@ class ThrottledProxy:
         headers: dict[str, str],
     ) -> bytes:
         lines = [f"{method} {path} {version}"]
-        lines.extend(f"{key}: {value}" for key, value in headers.items())
+        for key, value in headers.items():
+            # Strip CR/LF from header values to prevent header injection.
+            safe_value = value.replace("\r", "").replace("\n", "")
+            lines.append(f"{key}: {safe_value}")
         return ("\r\n".join(lines) + "\r\n\r\n").encode("iso-8859-1")
 
     async def _send_json(

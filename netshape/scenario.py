@@ -134,15 +134,27 @@ def save_user_scenario(scenario_dict: dict[str, Any]) -> Path:
     if not name:
         raise ScenarioError("scenario name is required")
     safe = re.sub(r"[^\w\-]", "_", name)
+    if not safe:
+        raise ScenarioError("scenario name produced an empty filename after sanitization")
     USER_SCENARIOS_DIR.mkdir(parents=True, exist_ok=True)
-    dest = USER_SCENARIOS_DIR / f"{safe}.json"
+    dest = (USER_SCENARIOS_DIR / f"{safe}.json").resolve()
+    # Guard against the unlikely edge case where sanitization still yields a traversal.
+    try:
+        dest.relative_to(USER_SCENARIOS_DIR.resolve())
+    except ValueError:
+        raise ScenarioError(f"invalid scenario name: {name!r}")
     dest.write_text(json.dumps(scenario_dict, indent=2), encoding="utf-8")
     return dest
 
 
 def load_user_scenario(name: str) -> Scenario:
     """Load a user-saved scenario by name from ~/.netshape/scenarios/."""
-    path = USER_SCENARIOS_DIR / f"{name}.json"
+    path = (USER_SCENARIOS_DIR / f"{name}.json").resolve()
+    # Prevent path traversal: the resolved path must stay inside USER_SCENARIOS_DIR.
+    try:
+        path.relative_to(USER_SCENARIOS_DIR.resolve())
+    except ValueError:
+        raise ScenarioError(f"invalid scenario name: {name!r}")
     if not path.exists():
         raise ScenarioError(f"user scenario not found: {name!r}")
     try:

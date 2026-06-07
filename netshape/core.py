@@ -46,6 +46,7 @@ def save_config(config: dict[str, Any]) -> None:
     try:
         _NETSHAPE_DIR.mkdir(parents=True, exist_ok=True)
         _CONFIG_FILE.write_text(json.dumps(config, indent=2), encoding="utf-8")
+        _restrict_permissions(_CONFIG_FILE)
     except Exception:  # nosec B110
         pass
 
@@ -358,6 +359,7 @@ def write_state(state: SessionState, path: Path = DEFAULT_STATE_PATH) -> None:
     tmp = path.with_suffix(".tmp")
     with _exclusive_state(path):
         tmp.write_text(json.dumps(state.to_dict(), indent=2), encoding="utf-8")
+        _restrict_permissions(tmp)
         os.replace(tmp, path)
 
 
@@ -384,6 +386,18 @@ def clear_state(path: Path = DEFAULT_STATE_PATH) -> None:
             path.unlink()
         except FileNotFoundError:
             pass
+
+
+def _restrict_permissions(path: Path) -> None:
+    """Set owner-only read/write permissions (0o600) on a file.
+
+    This is a best-effort call — it silently does nothing on platforms that
+    don't support POSIX-style permissions (e.g. some Windows configurations).
+    """
+    try:
+        path.chmod(0o600)
+    except (OSError, NotImplementedError):
+        pass
 
 
 def _proxy_env(env: dict[str, str], traffic_port: int) -> dict[str, str]:
